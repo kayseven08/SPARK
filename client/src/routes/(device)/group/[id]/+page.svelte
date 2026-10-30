@@ -1,18 +1,21 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { onMount } from 'svelte';
+	import { afterNavigate } from '$app/navigation';
 	import { goto } from '$app/navigation';
 	import { getStore } from '$lib/tauri';
 	import { fetchGroupById } from '$lib/api';
-	import type { Group } from '$lib/xata';
+	import type { Group } from '$lib/supabase';
 
 	let loading = true;
 	let group: Group | null = null;
 	let error: string | null = null;
 
-	onMount(async () => {
+	afterNavigate(async () => {
+		loading = true;
+		error = null;
 		const id = $page.params.id;
 		const token = (await getStore('accessToken')) as string;
+		if (!id) return;
 		const res = await fetchGroupById(id, token);
 		if (res.ok) {
 			group = await res.json();

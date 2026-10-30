@@ -1,199 +1,287 @@
+<script context="module" lang="ts">
+	let nextFormId = 0;
+</script>
+
 <script lang="ts">
-    import { invoke } from '@tauri-apps/api/tauri';
-    import { fade, fly } from 'svelte/transition';
-    import type { Device, Command } from '$lib';
-    import { onMount, createEventDispatcher } from 'svelte';
-    import type { Group } from './xata';
-    import { getStore } from './tauri';
-    import { isGroupReady } from './storeAccess';
-    import { DEFAULT_PRESETS } from '$lib/presets'; // Import from the helper file
+	import { createEventDispatcher } from 'svelte';
+	import type { Device, Command } from '$lib';
+	import Modal from './Modal.svelte';
+	import AliasEditor from './AliasEditor.svelte';
+	import { copyCommand, emptyCommand, normalizeCommand } from './commandEditing';
+	import { runCommand as runLocalCommand, getStore } from './tauri';
+	import { ensureAuthenticated } from './auth';
+	import { supabase } from './supabase';
+	import { getDefaultPresets } from './presets';
 
-    const dispatch = createEventDispatcher();
+	export let runCommand: (command: Command) => Promise<void> = runLocalCommand;
+	export let allowTestRun = true;
+	export let device: Device = {};
+	export let newCommand: Command = emptyCommand();
+	export let saveCommand: (command: Command) => Promise<void>;
+	export let visible = false;
+	export let type: 'Create' | 'Edit' = 'Create';
 
-    export let device: Device = {};
-    export let newCommand: Command = { name: '', command: '', aliases: [''] };
-    export let updateCommand: () => Promise<void> = async () => {};
-    export let visible: boolean = false;
-    export let type: 'Create' | 'Edit' = 'Create';
+	const dispatch = createEventDispatcher();
+	const formId = `command-form-${++nextFormId}`;
+	let draft = emptyCommand();
+	let groupPresets: Command[] = [];
+	let presets: Command[] = [];
+	let showPresets = false;
+	let errorMessage = '';
+	let testResult = '';
+	let saving = false;
+	let testing = false;
+	let wasVisible = false;
+	let requestId = 0;
 
-    let group = {} as Group;
-    let showPresets = false;
-    
-    // Combine group presets and defaults
-    $: allPresets = [
-        ...(group?.commandPresets || []),
-        ...DEFAULT_PRESETS
-    ];
+	$: if (visible !== wasVisible) {
+		wasVisible = visible;
+		if (visible) openEditor();
+	}
+	$: presets = [
+		...groupPresets,
+		...getDefaultPresets(typeof navigator !== 'undefined' ? navigator.platform : '')
+	];
 
-    onMount(async () => {
-        const g = await getStore('group');
-        if (isGroupReady(g)) {
-            group = g;
-        }
-    });
+	function openEditor() {
+		draft = copyCommand(newCommand);
+		errorMessage = '';
+		testResult = '';
+		showPresets = false;
+		groupPresets = [];
+		void loadGroupPresets(++requestId);
+	}
 
-    async function runCurrent() {
-        await invoke('run_command', { command: newCommand.command });
-    }
+	async function loadGroupPresets(request: number) {
+		try {
+			const group = device.assignedGroup ?? ((await getStore('group')) as { id?: string } | null);
+			if (!group?.id || !(await ensureAuthenticated())) return;
+			const { data, error } = await supabase
+				.from('command_presets')
+				.select('name, command, aliases')
+				.eq('assigned_group_id', group.id);
+			if (request !== requestId || !visible) return;
+			if (error) throw error;
+			groupPresets = data ?? [];
+		} catch {
+			// Built-in presets stay available if the optional group lookup fails.
+			groupPresets = [];
+		}
+	}
 
-    function applyPreset(preset: Command) {
-        newCommand = { ...preset, aliases: [...preset.aliases] }; // Clone it
-        showPresets = false;
-    }
+	function close() {
+		visible = false;
+		dispatch('close');
+	}
 
-    function close() {
-        visible = false;
-        dispatch('close');
-    }
+	async function save() {
+		if (saving || testing) return;
+		errorMessage = '';
+		saving = true;
+		try {
+			await saveCommand(normalizeCommand(draft));
+			close();
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : String(error);
+		} finally {
+			saving = false;
+		}
+	}
+
+	async function testCommand() {
+		if (saving || testing) return;
+		errorMessage = '';
+		testResult = '';
+		testing = true;
+		try {
+			await runCommand(normalizeCommand(draft));
+			testResult = 'Command finished successfully.';
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : String(error);
+		} finally {
+			testing = false;
+		}
+	}
 </script>
 
 {#if visible}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div 
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
-        transition:fade={{ duration: 200 }}
-        on:click|self={close}
-    >
-        <div 
-            class="bg-dark-background-800 w-full max-w-4xl h-[85vh] rounded-2xl shadow-2xl border border-white/10 flex flex-col relative overflow-hidden"
-            transition:fly={{ y: 20, duration: 300 }}
-        >
-            
-            <div class="h-16 border-b border-white/5 flex items-center justify-between px-6 bg-dark-background-900/50">
-                <h2 class="text-xl font-bold text-white">
-                    <span class="text-dark-primary">{type}</span> Command
-                </h2>
-                
-                <div class="flex items-center gap-2">
-                    <button 
-                        class="px-3 py-1.5 text-sm rounded-lg bg-dark-background-600 hover:bg-dark-primary hover:text-white transition-colors flex items-center gap-2 text-gray-300"
-                        on:click={() => showPresets = !showPresets}
-                    >
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-4">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
-                        </svg>
-                        {showPresets ? 'Hide Presets' : 'Load Preset'}
-                    </button>
-
-                    <button on:click={close} class="p-2 hover:text-red-500 transition-colors">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-6">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
-                        </svg>
-                    </button>
-                </div>
-            </div>
-
-            <div class="flex-1 flex overflow-hidden relative">
-                
-                {#if showPresets}
-                    <div 
-                        class="absolute inset-y-0 left-0 z-20 w-80 bg-dark-background-700 border-r border-white/10 overflow-y-auto p-4"
-                        transition:fly={{ x: -20, duration: 200 }}
-                    >
-                        <h3 class="text-sm font-bold text-gray-400 uppercase mb-4 tracking-wider">Available Presets</h3>
-                        <div class="space-y-2">
-                            {#each allPresets as preset}
-                                <button 
-                                    class="w-full text-left p-3 rounded-lg bg-dark-background-600 hover:bg-dark-primary/20 hover:border-dark-primary border border-transparent transition-all group"
-                                    on:click={() => applyPreset(preset)}
-                                >
-                                    <div class="font-medium text-white group-hover:text-dark-primary">{preset.name}</div>
-                                    <div class="text-xs text-gray-400 font-mono truncate mt-1 opacity-70">{preset.command}</div>
-                                </button>
-                            {/each}
-                        </div>
-                    </div>
-                {/if}
-
-                <div class="flex-1 grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-white/10 overflow-hidden">
-                    
-                    <div class="p-8 overflow-y-auto">
-                        <div class="space-y-6">
-                            <div class="flex flex-col gap-2">
-                                <label for="cmd-name" class="text-sm font-semibold text-gray-400">Command Name</label>
-                                <input 
-                                    id="cmd-name"
-                                    type="text" 
-                                    bind:value={newCommand.name}
-                                    placeholder="e.g. Open Browser"
-                                    class="bg-dark-background-900 border border-white/10 rounded-lg p-3 text-white focus:border-dark-primary focus:outline-none transition-colors"
-                                />
-                            </div>
-
-                            <div class="flex flex-col gap-2">
-                                <label for="cmd-alias" class="text-sm font-semibold text-gray-400">Aliases (Triggers)</label>
-                                <div class="bg-dark-background-900 border border-white/10 rounded-lg p-3 min-h-[100px] flex flex-wrap gap-2 content-start">
-                                    {#each newCommand.aliases as alias, i}
-                                        <div class="flex items-center gap-1 bg-dark-background-600 text-sm px-2 py-1 rounded-md border border-white/5">
-                                            <input 
-                                                class="bg-transparent w-auto min-w-[20px] max-w-[120px] focus:outline-none text-white"
-                                                bind:value={alias}
-                                                placeholder="..."
-                                            />
-                                            <button 
-                                                tabindex="-1"
-                                                class="text-gray-400 hover:text-red-400"
-                                                on:click={() => newCommand.aliases = newCommand.aliases.filter((_, idx) => idx !== i)}
-                                            >
-                                                &times;
-                                            </button>
-                                        </div>
-                                    {/each}
-                                    <button 
-                                        class="px-2 py-1 text-xs bg-dark-primary/20 text-dark-primary rounded hover:bg-dark-primary hover:text-white transition-colors"
-                                        on:click={() => newCommand.aliases = [...newCommand.aliases, '']}
-                                    >
-                                        + Add
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="p-8 bg-black/20 flex flex-col">
-                        <div class="flex items-center justify-between mb-2">
-                            <label for="cmd-code" class="text-sm font-semibold text-gray-400">Execution Code</label>
-                            <button 
-                                on:click={runCurrent}
-                                class="text-xs flex items-center gap-1 text-green-400 hover:text-green-300"
-                            >
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="size-3">
-                                    <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
-                                </svg>
-                                Test Run
-                            </button>
-                        </div>
-                        
-                        <div class="flex-1 relative">
-                            <textarea 
-                                id="cmd-code"
-                                bind:value={newCommand.command}
-                                class="w-full h-full bg-dark-background-900 font-mono text-sm p-4 rounded-lg border border-white/10 focus:border-dark-primary focus:outline-none resize-none"
-                                spellcheck="false"
-                            ></textarea>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="h-20 border-t border-white/5 flex items-center justify-end px-8 gap-4 bg-dark-background-900/50">
-                <button 
-                    on:click={close}
-                    class="px-6 py-2 rounded-lg text-gray-400 hover:text-white transition-colors"
-                >
-                    Cancel
-                </button>
-                <button 
-                    on:click={async () => {
-                        await updateCommand();
-                        close();
-                    }}
-                    class="px-8 py-2 rounded-lg bg-dark-primary hover:bg-dark-accent text-white font-medium shadow-lg shadow-dark-primary/20 transition-all transform active:scale-95"
-                >
-                    Save Command
-                </button>
-            </div>
-        </div>
-    </div>
+	<Modal
+		bind:open={visible}
+		title={`${type} command`}
+		description={device.name
+			? `Configure a command for ${device.name}.`
+			: 'Give your command a name, voice aliases, and shell instructions.'}
+		busy={saving || testing}
+		wide
+		on:close={close}
+	>
+		<form id={formId} on:submit|preventDefault={save}>
+			<div class="preset-toolbar">
+				<p class="editor-helper">Start from scratch or choose a preset.</p>
+				<button
+					type="button"
+					class="editor-button"
+					aria-expanded={showPresets}
+					disabled={saving || testing}
+					on:click={() => {
+						showPresets = !showPresets;
+					}}>{showPresets ? 'Hide presets' : 'Browse presets'}</button
+				>
+			</div>
+			{#if showPresets}
+				<section class="preset-panel" aria-label="Command presets">
+					{#each presets as preset}
+						<button
+							type="button"
+							class="preset-option"
+							on:click={() => {
+								draft = { ...copyCommand(preset), id: draft.id };
+								showPresets = false;
+							}}
+						>
+							<span>{preset.name}</span><code>{preset.command}</code>
+						</button>
+					{/each}
+				</section>
+			{/if}
+			<div class="command-grid">
+				<div class="command-details">
+					<div class="editor-field">
+						<label class="editor-label" for={`${formId}-name`}>Command name</label>
+						<input
+							class="editor-input"
+							id={`${formId}-name`}
+							bind:value={draft.name}
+							placeholder="e.g. Open browser"
+							required
+							disabled={saving || testing}
+						/>
+					</div>
+					<AliasEditor bind:values={draft.aliases} disabled={saving || testing} />
+				</div>
+				<div class="editor-field command-code">
+					<label class="editor-label" for={`${formId}-code`}>Shell command</label>
+					<textarea
+						class="editor-input"
+						id={`${formId}-code`}
+						bind:value={draft.command}
+						placeholder="Enter the command to execute…"
+						spellcheck="false"
+						required
+						disabled={saving || testing}
+					></textarea>
+					<p class="editor-helper">
+						Runs on the selected device using its operating system’s shell.
+					</p>
+				</div>
+			</div>
+			{#if errorMessage}<p class="editor-error" role="alert">{errorMessage}</p>{/if}
+			{#if testResult}<p class="test-result" role="status">{testResult}</p>{/if}
+		</form>
+		<svelte:fragment slot="footer">
+			{#if allowTestRun}<button
+					type="button"
+					class="editor-button test-button"
+					disabled={saving || testing || !draft.command.trim()}
+					on:click={testCommand}>{testing ? 'Running…' : 'Test run'}</button
+				>{/if}
+			<button type="button" class="editor-button" disabled={saving || testing} on:click={close}
+				>Cancel</button
+			>
+			<button type="submit" form={formId} class="editor-primary" disabled={saving || testing}
+				>{saving ? 'Saving…' : 'Save command'}</button
+			>
+		</svelte:fragment>
+	</Modal>
 {/if}
+
+<style>
+	form {
+		display: grid;
+		gap: 1.5rem;
+		min-width: 0;
+	}
+	.preset-toolbar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		flex-wrap: wrap;
+		gap: 0.75rem;
+	}
+	.preset-panel {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.5rem;
+		max-height: 15rem;
+		overflow-y: auto;
+		padding: 0.75rem;
+		background: #111114;
+		border: 1px solid rgb(255 255 255 / 0.08);
+		border-radius: 0.875rem;
+	}
+	.preset-option {
+		min-width: 0;
+		display: grid;
+		gap: 0.3rem;
+		padding: 0.75rem;
+		text-align: left;
+		border: 1px solid transparent;
+		border-radius: 0.5rem;
+	}
+	.preset-option:hover,
+	.preset-option:focus-visible {
+		background: #202025;
+		border-color: #6366f1;
+		outline: none;
+	}
+	.preset-option span {
+		font-size: 0.8125rem;
+		color: #e4e4e7;
+		font-weight: 600;
+	}
+	.preset-option code {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		color: #a1a1aa;
+		font-size: 0.75rem;
+	}
+	.command-grid {
+		display: grid;
+		grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+		gap: 1.5rem;
+	}
+	.command-details {
+		display: flex;
+		flex-direction: column;
+		gap: 1.5rem;
+		min-width: 0;
+	}
+	.command-code textarea {
+		flex: 1;
+		min-height: 17rem;
+		resize: vertical;
+		font-family: 'JetBrains Mono', monospace;
+		font-size: 0.8125rem;
+		line-height: 1.8;
+		tab-size: 2;
+	}
+	.test-button {
+		margin-right: auto;
+	}
+	.test-result {
+		color: #6ee7b7;
+		font-size: 0.8125rem;
+	}
+	@media (max-width: 700px) {
+		.command-grid {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.command-code textarea {
+			min-height: 11rem;
+		}
+		.preset-panel {
+			grid-template-columns: minmax(0, 1fr);
+		}
+	}
+</style>

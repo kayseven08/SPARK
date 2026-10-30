@@ -1,41 +1,42 @@
-import type { ClientDevice, Message, ServerDevice } from './supabase';
+// UI-facing domain types. These are the shapes the Svelte pages and the Tauri
+// store use (camelCase + nested assignedUser/assignedGroup). `$lib/api.ts` maps
+// Supabase rows (snake_case) to/from these, so pages never see raw rows.
 
-export type Device = {
-	name?: string;
-	messages?: Message[];
-	assignedGroup?: { id: string };
-	assigned_group_id?: string;
-	assignedUser?: { id: string };
-	assigned_user_id?: string;
-	id?: string;
-	deviceCommands?: Command[];
-	device_commands?: Command[];
-	type?: string;
-	aliases?: string[];
-};
-
-export type PublicUser = {
+export type Message = {
 	id: string;
-	email: string;
-	username: string;
-	settings: UserSettings;
-};
-export type UserSettings = {
-	primaryCommunicationMethod: 'api' | 'nats' | 'localhost' | 'realtime';
+	from: string | null; // sender device id (null if the sender device was deleted)
+	to: string; // receiver device id
+	content: string;
+	status: number; // 0 = pending, 1 = handled, 2 = failed
+	createdAt: string;
 };
 
 export type Command = {
+	id?: string; // present once persisted
 	command: string;
 	name: string;
 	aliases: string[];
 };
 
-export const deviceToSpecificDevice = (device: Device): Partial<ClientDevice | ServerDevice> => ({
-	name: device.name!,
-	messages: device.messages!,
-	assigned_group_id: device.assignedGroup?.id ?? device.assigned_group_id ?? '',
-	assigned_user_id: device.assignedUser?.id ?? device.assigned_user_id ?? '',
-	id: device.id!,
-	device_commands: device.deviceCommands ?? device.device_commands ?? [],
-	aliases: device.aliases ?? []
-});
+export type Device = {
+	id?: string;
+	name?: string;
+	type?: 'client' | 'server' | string;
+	aliases?: string[];
+	assignedGroup?: { id: string };
+	assignedUser?: { id: string };
+	deviceCommands?: Command[];
+	/** Loaded on demand via getDeviceMessagesApi(); never stored in the Tauri store. */
+	messages?: Message[];
+};
+
+export type UserSettings = {
+	primaryCommunicationMethod: 'realtime' | 'api' | 'localhost';
+};
+
+export type PublicUser = {
+	id: string;
+	email?: string;
+	username: string;
+	settings: UserSettings;
+};

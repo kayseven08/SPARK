@@ -1,119 +1,423 @@
 <script lang="ts">
-    import { type Command, type Device } from '$lib';
-    import CommandCard from './CommandCard.svelte';
-    import CommandPopup from './CommandPopup.svelte';
-    import Radio from './Radio.svelte';
-    import { updateDeviceApi, deleteMessageApi, getDeviceApi } from '$lib/api';
+	import { createEventDispatcher } from 'svelte';
+	import type { Command, Device, Message } from '$lib';
+	import Modal from './Modal.svelte';
+	import AliasEditor from './AliasEditor.svelte';
+	import CommandCard from './CommandCard.svelte';
+	import CommandPopup from './CommandPopup.svelte';
+	import { deviceData } from './stores';
+	import { copyDevice, replaceCommand } from './commandEditing';
+	import { updateDeviceApi, deleteMessageApi, getDeviceMessagesApi } from '$lib/api';
 
-    export let device: Device = {};
-    export let thisDevice: Device = {};
-    export let visible: boolean = false;
-    export let accessToken: string = '';
-    export let runCommand: (command: Command) => Promise<void>;
+	export let device: Device = {};
+	export let thisDevice: Device = {};
+	export let visible = false;
+	export let accessToken = '';
+	export let runCommand: (command: Command) => Promise<void>;
 
-    let createCommandPopup = false;
-    let newCommand: Command = { name: '', command: '', aliases: [''] };
+	const dispatch = createEventDispatcher();
+	let draft = copyDevice({});
+	let messages: Message[] = [];
+	let errorMessage = '';
+	let messageError = '';
+	let loadingMessages = false;
+	let saving = false;
+	let deletingMessage = '';
+	let createCommandPopup = false;
+	let wasVisible = false;
+	let requestId = 0;
 
-    async function handleUpdate() {
-        await updateDeviceApi(device, accessToken, thisDevice.id);
-    }
+	$: if (visible !== wasVisible) {
+		wasVisible = visible;
+		if (visible) {
+			draft = copyDevice(device);
+			errorMessage = '';
+			messageError = '';
+			messages = device.messages ?? [];
+			createCommandPopup = false;
+			void loadMessages();
+		}
+	}
+	$: localDevice = device.id === thisDevice.id;
+	$: changed =
+		JSON.stringify({ ...draft, messages: undefined }) !==
+		JSON.stringify({ ...device, messages: undefined });
 
-    async function deleteCommand(command: Command) {
-        device.deviceCommands = device.deviceCommands?.filter(c => c !== command);
-        await handleUpdate();
-    }
+	function close() {
+		visible = false;
+	}
 
-    async function removeMessage(messageId: string | undefined) {
-        if (!messageId) return;
-        const ok = await deleteMessageApi(messageId, accessToken);
-        if (ok) {
-            device.messages = device.messages?.filter((m) => m.id !== messageId);
-            await handleUpdate();
-        }
-    }
+	async function loadMessages() {
+		if (!device.id) return;
+		const request = ++requestId;
+		loadingMessages = true;
+		messageError = '';
+		try {
+			const loaded = await getDeviceMessagesApi(device.id);
+			if (request === requestId && visible) messages = loaded;
+		} catch (error) {
+			if (request === requestId) messageError = String(error);
+		} finally {
+			if (request === requestId) loadingMessages = false;
+		}
+	}
+
+	async function save() {
+		if (saving) return;
+		errorMessage = '';
+		if (!draft.name?.trim()) {
+			errorMessage = 'Enter a device name.';
+			return;
+		}
+		saving = true;
+		try {
+			const updated = {
+				...draft,
+				name: draft.name.trim(),
+				aliases: [...new Set((draft.aliases ?? []).map((alias) => alias.trim()).filter(Boolean))]
+			};
+			const response = await updateDeviceApi(updated, accessToken, thisDevice.id);
+			if (!response.ok) {
+				const body = await response.json().catch(() => ({}));
+				throw new Error(body.error ?? 'Could not save device changes.');
+			}
+			device = { ...updated, messages };
+			if (localDevice) deviceData.set(updated);
+			dispatch('saved', { device });
+			close();
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : String(error);
+		} finally {
+			saving = false;
+		}
+	}
+
+	async function saveCommand(command: Command, original?: Command) {
+		draft = {
+			...draft,
+			deviceCommands: replaceCommand(draft.deviceCommands ?? [], command, original)
+		};
+	}
+
+	async function deleteCommand(command: Command) {
+		draft = { ...draft, deviceCommands: draft.deviceCommands?.filter((item) => item !== command) };
+	}
+
+	async function removeMessage(id: string) {
+		deletingMessage = id;
+		messageError = '';
+		try {
+			if (!(await deleteMessageApi(id, accessToken)))
+				throw new Error('Could not delete this message. Try again.');
+			messages = messages.filter((message) => message.id !== id);
+		} catch (error) {
+			messageError = String(error);
+		} finally {
+			deletingMessage = '';
+		}
+	}
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
 {#if visible}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" on:click|self={() => visible = false}>
-        <div class="bg-dark-background-500 rounded-2xl w-[85%] h-[85%] shadow-2xl relative flex flex-col p-6 overflow-hidden">
-            
-            <button class="absolute top-4 right-4 text-dark-text hover:text-red-500 transition-colors" on:click={() => { handleUpdate(); visible = false; }}>
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-8">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
-                </svg>
-            </button>
-
-            <h1 class="text-2xl text-dark-primary text-center mb-6">
-                Settings for <span class="font-bold text-dark-accent">{device.name}</span>
-            </h1>
-
-            <div class="flex flex-row gap-6 h-full overflow-hidden">
-                <div class="w-1/2 flex flex-col gap-4">
-                    <div class="space-y-4 bg-dark-background-400 p-4 rounded-xl">
-                        <div>
-                            <label for="name" class="block text-sm text-dark-secondary mb-1">Device Name</label>
-                            <input type="text" bind:value={device.name} class="w-full bg-transparent border-b border-dark-secondary text-xl focus:outline-none focus:border-dark-accent text-dark-text" />
-                        </div>
-                        
-                        <div class="h-32 overflow-y-auto no-scrollbar border border-dark-secondary rounded-lg p-2">
-                            <label class="text-sm text-dark-secondary">Aliases</label>
-                            {#each device.aliases || [] as alias, i}
-                                <div class="flex items-center gap-2 mt-1">
-                                    <input type="text" bind:value={device.aliases![i]} class="flex-1 bg-transparent border-b border-dark-secondary text-dark-text" />
-                                    <button on:click={() => device.aliases = device.aliases!.filter((_, idx) => idx !== i)} class="text-red-400 hover:text-red-600">×</button>
-                                </div>
-                            {/each}
-                            <button class="mt-2 text-dark-accent text-sm" on:click={() => device.aliases = [...(device.aliases || []), '']}>+ Add Alias</button>
-                        </div>
-
-                        <Radio legend="Device Type" options={[{value:'client', label:'Client'}, {value:'server', label:'Server'}]} bind:userSelected={device.type} />
-                    </div>
-
-                    <div class="flex-1 border border-dark-secondary rounded-xl p-4 overflow-hidden flex flex-col">
-                        <h2 class="text-xl text-dark-text mb-2 text-center">Recent Messages</h2>
-                        <div class="overflow-y-auto space-y-2 no-scrollbar">
-                            {#each device.messages || [] as message}
-                                {#await message.from ? getDeviceApi(message.from, 'client', accessToken) : Promise.resolve(null)}
-                                    <div class="animate-pulse bg-dark-background-300 h-12 rounded-lg"></div>
-                                {:then sender}
-                                    <div class="bg-dark-background-300 p-3 rounded-lg relative group">
-                                        <span class="text-dark-accent text-sm">{sender?.name || 'Unknown'}</span>
-                                        <p class="text-green-500">{message.content}</p>
-                                        <button type="button" class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 text-red-500" on:click={() => removeMessage(message.id)}>
-                                            <svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79" /></svg>
-                                        </button>
-                                    </div>
-                                {/await}
-                            {/each}
-                        </div>
-                    </div>
-                </div>
-
-                <div class="w-1/2 border border-dark-secondary rounded-xl p-4 flex flex-col overflow-hidden">
-                    <h2 class="text-xl text-dark-text mb-4 text-center">Device Commands</h2>
-                    <div class="flex-1 overflow-y-auto space-y-3 no-scrollbar">
-                        {#each device.deviceCommands || [] as command}
-                            <CommandCard {command} updateCommands={handleUpdate} {deleteCommand} {runCommand} />
-                        {/each}
-                    </div>
-                    <button class="mt-4 p-3 bg-dark-background-400 rounded-xl hover:bg-dark-background-300 flex justify-center text-dark-accent transition-colors" on:click={() => createCommandPopup = true}>
-                        <svg xmlns="http://www.w3.org/2000/svg" class="size-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
+	<Modal
+		bind:open={visible}
+		title="Device settings"
+		description={device.name
+			? `Manage ${device.name}, its commands, and recent messages.`
+			: 'Configure this device.'}
+		busy={saving}
+		wide
+	>
+		<div class="device-grid">
+			<section class="device-details" aria-label="Device details">
+				<div class="editor-field">
+					<label for="device-name" class="editor-label">Device name</label>
+					<input
+						id="device-name"
+						class="editor-input"
+						bind:value={draft.name}
+						placeholder="e.g. My laptop"
+						maxlength="80"
+						required
+						disabled={saving}
+					/>
+				</div>
+				<fieldset class="editor-field" disabled={saving}>
+					<legend class="editor-label">Device type</legend>
+					<div class="device-type-options">
+						<label
+							><input type="radio" name="device-type" value="client" bind:group={draft.type} /><span
+								>Client<small>Receives device commands</small></span
+							></label
+						>
+						<label
+							><input type="radio" name="device-type" value="server" bind:group={draft.type} /><span
+								>Server<small>Hosts the voice assistant</small></span
+							></label
+						>
+					</div>
+				</fieldset>
+				<AliasEditor label="Device aliases" bind:values={draft.aliases} disabled={saving} />
+			</section>
+			<section class="device-commands" aria-label="Device commands">
+				<div class="section-heading">
+					<div>
+						<h3>Commands</h3>
+						<p class="editor-helper">
+							{draft.deviceCommands?.length ?? 0} configured for this device
+						</p>
+					</div>
+					<button
+						type="button"
+						class="editor-button"
+						disabled={saving}
+						on:click={() => {
+							createCommandPopup = true;
+						}}>+ Add command</button
+					>
+				</div>
+				{#if draft.deviceCommands?.length}
+					<div class="command-list">
+						{#each draft.deviceCommands as command}
+							<CommandCard
+								{command}
+								device={draft}
+								updateCommands={(updated) => saveCommand(updated, command)}
+								{deleteCommand}
+								{runCommand}
+								allowTestRun={localDevice}
+								canRun={localDevice || !changed}
+							/>
+						{/each}
+					</div>
+				{:else}<div class="empty-state">
+						<p>No commands yet</p>
+						<span>Add a command to give this device something to run.</span>
+					</div>{/if}
+				<p class="editor-helper">Command edits are applied when you save device changes.</p>
+			</section>
+		</div>
+		<section class="message-section" aria-label="Recent messages">
+			<div class="section-heading">
+				<div>
+					<h3>Recent messages</h3>
+					<p class="editor-helper">Latest incoming and outgoing messages</p>
+				</div>
+				<button
+					type="button"
+					class="editor-button"
+					disabled={loadingMessages || saving}
+					on:click={loadMessages}>{loadingMessages ? 'Refreshing…' : 'Refresh'}</button
+				>
+			</div>
+			{#if messageError}<p class="editor-error" role="alert">{messageError}</p>{/if}
+			{#if loadingMessages && !messages.length}<p class="editor-helper" role="status">
+					Loading messages…
+				</p>
+			{:else if messages.length}
+				<div class="message-list">
+					{#each [...messages].reverse() as message (message.id)}
+						<article class="message-item">
+							<div class="message-content">
+								<div class="message-meta">
+									<span>{message.to === device.id ? 'Received' : 'Sent'}</span><span
+										>{message.status === 0
+											? 'Pending'
+											: message.status === 1
+												? 'Handled'
+												: 'Failed'}</span
+									>
+								</div>
+								<p>{message.content}</p>
+							</div>
+							<button
+								type="button"
+								class="editor-icon-button"
+								aria-label="Delete message"
+								disabled={!!deletingMessage || saving}
+								on:click={() => removeMessage(message.id)}
+								><svg
+									width="18"
+									height="18"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="1.6"
+									aria-hidden="true"
+									><path
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7m4-7v7"
+									/></svg
+								></button
+							>
+						</article>
+					{/each}
+				</div>
+			{:else}<div class="empty-state">
+					<p>No messages yet</p>
+					<span>Messages will appear here when this device sends or receives a command.</span>
+				</div>{/if}
+		</section>
+		{#if errorMessage}<p class="editor-error save-error" role="alert">{errorMessage}</p>{/if}
+		<svelte:fragment slot="footer"
+			><span class="editor-helper save-note"
+				>{changed ? 'You have unsaved changes' : 'Changes stay local until you save'}</span
+			><button type="button" class="editor-button" disabled={saving} on:click={close}>Cancel</button
+			><button type="button" class="editor-primary" disabled={saving} on:click={save}
+				>{saving ? 'Saving…' : 'Save changes'}</button
+			></svelte:fragment
+		>
+	</Modal>
+	<CommandPopup
+		bind:visible={createCommandPopup}
+		device={draft}
+		{runCommand}
+		allowTestRun={localDevice}
+		{saveCommand}
+	/>
 {/if}
 
-<CommandPopup
-    {device}
-    bind:newCommand
-    bind:visible={createCommandPopup}
-    updateCommand={async () => {
-        device.deviceCommands = [...(device.deviceCommands || []), newCommand];
-        await handleUpdate();
-        createCommandPopup = false;
-    }}
-/>
+<style>
+	.device-grid {
+		display: grid;
+		grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+		gap: 2rem;
+	}
+	.device-details,
+	.device-commands {
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 1.5rem;
+	}
+	.section-heading {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		flex-wrap: wrap;
+		gap: 0.75rem;
+	}
+	h3 {
+		color: #f4f4f5;
+		font-size: 0.9375rem;
+		font-weight: 600;
+		line-height: 1.6;
+	}
+	.device-type-options {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.5rem;
+	}
+	.device-type-options label {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.625rem;
+		padding: 0.75rem;
+		border: 1px solid rgb(255 255 255 / 0.12);
+		border-radius: 0.65rem;
+		cursor: pointer;
+	}
+	.device-type-options label:has(input:checked) {
+		border-color: #818cf8;
+		background: rgb(99 102 241 / 0.1);
+	}
+	.device-type-options input {
+		accent-color: #818cf8;
+		margin-top: 0.25rem;
+		flex-shrink: 0;
+	}
+	.device-type-options span {
+		font-size: 0.8125rem;
+	}
+	.device-type-options small {
+		display: block;
+		color: #a1a1aa;
+		font-size: 0.6875rem;
+		margin-top: 0.25rem;
+		line-height: 1.5;
+	}
+	.command-list {
+		display: grid;
+		gap: 0.625rem;
+	}
+	.empty-state {
+		padding: 1.5rem 1rem;
+		border: 1px dashed #3f3f46;
+		border-radius: 0.875rem;
+		text-align: center;
+	}
+	.empty-state p {
+		font-size: 0.875rem;
+		color: #d4d4d8;
+	}
+	.empty-state span {
+		display: block;
+		margin-top: 0.4rem;
+		color: #a1a1aa;
+		font-size: 0.8125rem;
+		line-height: 1.6;
+	}
+	.message-section {
+		margin-top: 2rem;
+		padding-top: 1.5rem;
+		border-top: 1px solid rgb(255 255 255 / 0.08);
+		display: grid;
+		gap: 1rem;
+	}
+	.message-list {
+		display: grid;
+		gap: 0.5rem;
+		max-height: 17rem;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+	}
+	.message-item {
+		display: flex;
+		align-items: flex-start;
+		gap: 1rem;
+		min-width: 0;
+		background: #111114;
+		border: 1px solid rgb(255 255 255 / 0.07);
+		border-radius: 0.75rem;
+		padding: 0.875rem;
+	}
+	.message-content {
+		flex: 1;
+		min-width: 0;
+	}
+	.message-meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.75rem;
+		color: #a1a1aa;
+		font-size: 0.6875rem;
+		margin-bottom: 0.375rem;
+	}
+	.message-item p {
+		overflow-wrap: anywhere;
+		color: #e4e4e7;
+		font-size: 0.8125rem;
+		line-height: 1.6;
+	}
+	.save-note {
+		margin-right: auto;
+	}
+	.save-error {
+		margin-top: 1rem;
+	}
+	@media (max-width: 800px) {
+		.device-grid {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.device-commands {
+			border-top: 1px solid rgb(255 255 255 / 0.08);
+			padding-top: 1.5rem;
+		}
+	}
+	@media (max-width: 600px) {
+		.save-note {
+			width: 100%;
+		}
+	}
+</style>

@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { fly } from 'svelte/transition';
-  import { getStore } from '$lib/tauri';
+  import { getStore, setStore } from '$lib/tauri';
   import { goto } from '$app/navigation';
-  import type { Group } from '$lib/xata';
+  import type { Group } from '$lib/supabase';
+  import { fetchGroupById } from '$lib/api';
   import { isGroupReady, isPublicUserReady } from '$lib/storeAccess';
 
   let group = {
@@ -17,7 +18,11 @@
   onMount(async () => {
     const g = await getStore('group');
     if (isGroupReady(g)) {
-      group = g;
+      const response = await fetchGroupById(g.id, '');
+      if (response.ok) {
+        group = await response.json();
+        await setStore('group', group);
+      }
     }
 
     const u = await getStore('user');
@@ -126,11 +131,11 @@
               <div class="space-y-3.5 text-xs">
                 <div class="flex justify-between items-center">
                   <span class="text-zinc-400">Database Fabric</span>
-                  <span class="text-dark-primary font-medium bg-dark-primary/10 px-2 py-0.5 rounded text-[11px]">Xata Connected</span>
+                  <span class="text-dark-primary font-medium bg-dark-primary/10 px-2 py-0.5 rounded text-[11px]">Supabase Connected</span>
                 </div>
                 <div class="flex justify-between items-center">
                   <span class="text-zinc-400">Primary Protocol</span>
-                  <span class="text-zinc-200 font-mono text-[11px] uppercase bg-white/[0.05] px-1.5 py-0.5 rounded">{user?.settings?.primaryCommunicationMethod || 'NATS / TLS'}</span>
+                  <span class="text-zinc-200 font-mono text-[11px] uppercase bg-white/[0.05] px-1.5 py-0.5 rounded">{user?.settings?.primaryCommunicationMethod || 'realtime'}</span>
                 </div>
                 <div class="pt-4 border-t border-white/[0.04]">
                   <p class="text-zinc-400 leading-relaxed text-[11px] italic">

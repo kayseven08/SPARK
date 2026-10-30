@@ -1,4 +1,5 @@
 <script lang="ts">
+  export let disabled = false;
   export let type = "text";
   export let width = "w-full";
   export let height = ""; // Prop placeholder for legacy compatibility
@@ -10,7 +11,8 @@
 
 <div class="relative group {width} {size}">
   <input 
-    {type} 
+    {type}
+    {disabled}
     id={name}
     bind:value 
     placeholder=" "

@@ -12,7 +12,7 @@
 			return;
 		}
 		const device = await getStore('device') as Device;
-		if (device.id && device.assignedUser) {
+		if (device?.id && device.assignedUser) {
 			await goto('/dashboard');
 		}
 	});
@@ -29,7 +29,7 @@
 	<p class="text-lg text-gray-400 max-w-2xl leading-relaxed">
 		The next steps help you set up a group or add this device to an existing group. You can create an
 		account or sign in
-		<span class="text-dark-accent font-medium">(no email required)</span>.
+		<span class="text-dark-accent font-medium">(email and password required)</span>.
 	</p>
 	<div class="flex gap-6 items-center justify-center w-full max-w-md">
 		<button

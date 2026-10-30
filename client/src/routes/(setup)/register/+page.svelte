@@ -16,7 +16,7 @@
 
 	onMount(async () => {
 		const device = (await getStore('device')) as Device;
-		if (device.id && device.assignedUser) {
+		if (device?.id && device.assignedUser) {
 			await goto('/dashboard');
 		}
 	});

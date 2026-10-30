@@ -1,7 +1,6 @@
 import type { Command } from '$lib';
 import { invoke } from '@tauri-apps/api/tauri';
 import { PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY } from '$env/static/public';
-import { restoreAuthFromStore } from './auth';
 
 const STORE_PATH = 'stores/store.json';
 
@@ -24,7 +23,6 @@ export const runCommand = async (command: Command): Promise<void> => {
  * Then signals the Rust backend to (re)start its Realtime subscription.
  */
 export const initRealtime = async () => {
-	await restoreAuthFromStore();
 	await setStore('supabaseUrl', PUBLIC_SUPABASE_URL);
 	await setStore('supabaseAnonKey', PUBLIC_SUPABASE_ANON_KEY);
 	await invoke('init_realtime');

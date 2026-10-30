@@ -7,3 +7,5 @@ stores/
 .env
 client/stores/
 api/dist/
+
+claude_exported_data/

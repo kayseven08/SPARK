@@ -1,144 +1,62 @@
-<script>
-	// based on suggestions from:
-	// Sami Keijonen https://webdesign.tutsplus.com/tutorials/how-to-make-custom-accessible-checkboxes-and-radio-buttons--cms-32074
-	// and Inclusive Components by Heydon Pickering https://inclusive-components.design/toggle-button/
-
-	export let options;
-	export let legend;
-	export let userSelected = options[0].value;
-	export let fontSize = 16;
-	export let flexDirection = 'column';
-
-	const uniqueID = Math.floor(Math.random() * 100);
-
-	const slugify = (str = '') => str.toLowerCase().replace(/ /g, '-').replace(/\./g, '');
+<script context="module" lang="ts">
+	let nextId = 0;
 </script>
 
-<div
-	role="radiogroup"
-	class="group-container"
-	aria-labelledby={`label-${uniqueID}`}
-	style="font-size:{fontSize}px; flex-direction:{flexDirection}"
-	id={`group-${uniqueID}`}
->
-	<div class="legend" id={`label-${uniqueID}`}>{legend}</div>
-	<div class="w-fit left-[45%] relative">
-		{#each options as { value, label }}
-			<input class="sr-only" type="radio" id={slugify(label)} bind:group={userSelected} {value} />
-			<label for={slugify(label)}> {label} </label>
+<script lang="ts">
+	export let options: { value: string; label: string }[];
+	export let legend: string;
+	export let userSelected = options[0]?.value;
+	export let fontSize = 16;
+	export let flexDirection = 'column';
+	const name = `radio-options-${++nextId}`;
+</script>
+
+<fieldset style={`font-size: ${fontSize}px`}>
+	<legend>{legend}</legend>
+	<div class="options" style={`flex-direction: ${flexDirection}`}>
+		{#each options as option}
+			<label
+				><input type="radio" {name} value={option.value} bind:group={userSelected} /><span
+					>{option.label}</span
+				></label
+			>
 		{/each}
 	</div>
-</div>
+</fieldset>
 
 <style>
-	:root {
-		--accent-color: #bb25e4;
-		--gray: #ccc;
+	fieldset {
+		min-width: 0;
 	}
-
-	.group-container {
-		border-radius: 2px;
+	legend {
+		font-size: 0.875em;
+		font-weight: 600;
+		margin-bottom: 0.75rem;
+		color: #e4e4e7;
+	}
+	.options {
 		display: flex;
-		flex-direction: row;
-	}
-
-	.legend {
-		font-weight: bold;
+		flex-wrap: wrap;
+		gap: 0.625rem;
 	}
 	label {
-		user-select: none;
-		line-height: 1.2em;
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 0.75rem 1rem;
+		border: 1px solid rgb(255 255 255 / 0.12);
+		border-radius: 0.75rem;
+		cursor: pointer;
+		background: #111114;
+		color: #d4d4d8;
 	}
-
-	.sr-only {
-		position: absolute;
-		clip: rect(1px, 1px, 1px, 1px);
-		padding: 0;
-		border: 0;
-		height: 1px;
-		width: 1px;
-		overflow: hidden;
+	label:has(input:checked) {
+		border-color: #818cf8;
+		background: rgb(99 102 241 / 0.1);
+		color: #f4f4f5;
 	}
-
-	input[type='radio'] {
-		position: absolute;
-	}
-
-	input[type='radio'] + label {
-		display: block;
-		position: relative;
-		text-align: left;
-	}
-
-	input[type='radio'] + label::before {
-		content: '';
-		position: relative;
-		display: inline-block;
-		margin-right: 0.5em;
-		width: 1em;
-		height: 1em;
-		background: transparent;
-		border: 1px solid var(--gray, #ccc);
-		border-radius: 50%;
-		top: 0.2em;
-	}
-
-	input[type='radio']:checked + label::before {
-		border: 1px solid var(--gray, #ccc);
-		border-radius: 50%;
-	}
-
-	input[type='radio'] + label::after {
-		content: '';
-		position: absolute;
-		display: inline-block;
-		width: 0.5em;
-		height: 0.5em;
-		top: 0.45em;
-		left: 0.25em;
-		background: var(--accent-color, #282828);
-		border: 1px solid var(--accent-color, #282828);
-		border-radius: 50%;
-		transform: scale(0);
-	}
-
-	input[type='radio']:checked + label::after {
-		opacity: 1;
-		transform: scale(1);
-	}
-
-	input[type='radio']:focus + label::before {
-		box-shadow: 0 0 0 1px var(--accent-color, #282828);
-		border-radius: 50%;
-	}
-
-	input[type='radio']:disabled + label {
-		color: darken(var(--gray, #ccc), 10);
-	}
-
-	input[type='radio']:disabled + label::before {
-		background: var(--gray, #ccc);
-	}
-	/* gravy */
-
-	input[type='radio'] + label::before {
-		transition: background 0.3s ease-out;
-	}
-
-	input[type='radio']:checked + label::before {
-		transition: background 0.3s ease-in;
-	}
-
-	input[type='radio'] + label::after {
-		transition: transform 0.2s ease-out;
-	}
-
-	input[type='radio']:checked + label::after {
-		transition: transform 0.2s ease-in;
-	}
-
-	input[type='radio']:focus + label::before {
-		box-shadow: 0 0px 8px var(--accent-color, #282828);
-		border-radius: 50%;
+	input {
+		accent-color: #818cf8;
+		flex-shrink: 0;
 	}
 </style>

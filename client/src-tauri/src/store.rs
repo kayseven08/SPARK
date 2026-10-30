@@ -1,6 +1,9 @@
 use serde_json;
 use std::fs::{self, File};
 use std::path::PathBuf;
+use std::sync::Mutex;
+
+static STORE_LOCK: Mutex<()> = Mutex::new(());
 
 fn store_path(relative: &str) -> PathBuf {
     if let Some(proj_dirs) = directories::ProjectDirs::from("com", "spark", "ai.assistant") {
@@ -25,7 +28,6 @@ fn default_store() -> serde_json::Value {
         "device": {
             "id": "",
             "name": "",
-            "messages": [],
             "deviceCommands": []
         },
         "deviceType": "",
@@ -61,12 +63,14 @@ fn read_store(path: &PathBuf) -> serde_json::Value {
 }
 
 pub fn get(relative_path: String, key: String) -> serde_json::Value {
+    let _guard = STORE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let path = store_path(&relative_path);
     let json = read_store(&path);
     json.get(&key).cloned().unwrap_or(serde_json::Value::Null)
 }
 
 pub fn set(relative_path: String, key: String, value: serde_json::Value) {
+    let _guard = STORE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let path = store_path(&relative_path);
     let mut json = read_store(&path);
     if let Some(obj) = json.as_object_mut() {

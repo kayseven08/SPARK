@@ -9,10 +9,10 @@
 	let loading = true;
 
 	onMount(async () => {
-		await restoreAuthFromStore();
+		const authenticated = await restoreAuthFromStore();
 		const user = await getStore('user');
 		const device = await getStore('device');
-		const hasUser = isPublicUserReady(user);
+		const hasUser = authenticated && isPublicUserReady(user);
 		const hasDevice = isDeviceReady(device);
 		if (!hasUser && hasDevice) {
 			await goto('/login');

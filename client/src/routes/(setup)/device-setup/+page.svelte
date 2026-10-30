@@ -4,15 +4,13 @@
 	import Radio from '$lib/Radio.svelte';
 	import { deviceData } from '$lib/stores';
 	import { onMount } from 'svelte';
-	import { getStore, setStore } from '$lib/tauri';
+	import { getStore, setStore, initRealtime } from '$lib/tauri';
 	import type { Device, PublicUser } from '$lib';
-	import type { ClientDevice, ServerDevice } from '$lib/xata';
+	import type { ClientDevice, ServerDevice } from '$lib/supabase';
 	import {
-		addDeviceToGroupApi,
+		toStoredDevice,
 		createDeviceApi,
-		deleteDeviceApi,
-		listAllDevices,
-		refreshDeviceSessionApi
+		listAllDevices
 	} from '$lib/api';
 	import { getRequiredAccessToken, isPublicUserReady } from '$lib/storeAccess';
 
@@ -39,10 +37,12 @@
 		accessToken = token;
 
 		const device = await getStore('device') as Device;
-		if (device.id && device.assignedUser) {
+		if (device?.id && device.assignedUser) {
 			await goto('/dashboard');
 			return;
 		}
+		const group = await getStore('group') as { id?: string } | null;
+		if (group?.id) deviceData.set({ ...$deviceData, assignedGroup: { id: group.id }, assignedUser: { id: user.id } });
 		if (!assignedGroupId()) {
 			await goto('/groups-select');
 			return;
@@ -88,25 +88,14 @@
 			return { error: await res.text() };
 		}
 		const data = await res.json();
-		const response = await addDeviceToGroupApi(
-			{ groupId: gid, deviceId: data.id, deviceType },
-			accessToken
-		);
-		if (!response.ok) {
-			await deleteDeviceApi(data.id, deviceType as 'client' | 'server', accessToken);
-			return false;
-		}
-		const refreshTokenResponse = await refreshDeviceSessionApi({ user, device: data });
-		const refreshToken = (await refreshTokenResponse.json()).refreshToken;
-
-		await setStore('refreshToken', refreshToken);
-		await setStore('device', data);
+		await setStore('device', toStoredDevice(data));
 		await setStore('deviceType', deviceType);
 		deviceData.set({
 			assignedGroup: $deviceData.assignedGroup,
 			assignedUser: $deviceData.assignedUser,
 			...data
 		});
+		await initRealtime();
 		await goto('/dashboard');
 		return true;
 	}
@@ -119,8 +108,9 @@
 				assignedUser: $deviceData.assignedUser,
 				...selectedDevice
 			});
-			await setStore('device', selectedDevice);
+			await setStore('device', toStoredDevice(selectedDevice));
 			await setStore('deviceType', t);
+			await initRealtime();
 			await goto('/dashboard');
 		}
 	}

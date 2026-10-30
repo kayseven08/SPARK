@@ -1,73 +1,163 @@
 <script lang="ts">
-    import CreateCommandPopup from './CommandPopup.svelte';
-    import type { Command } from '$lib';
-    import { createEventDispatcher } from 'svelte';
+	import CommandPopup from './CommandPopup.svelte';
+	import type { Command, Device } from '$lib';
 
-    export let command: Command;
-    export let updateCommands: () => Promise<void> = async () => {};
-    export let deleteCommand: (command: Command) => Promise<void> = async () => {};
-    export let runCommand: (command: Command) => Promise<void> = async () => {};
-    
-    // Internal state for the popup
-    let popup = false;
+	export let command: Command;
+	export let device: Device = {};
+	export let updateCommands: (updated: Command) => Promise<void>;
+	export let deleteCommand: (command: Command) => Promise<void>;
+	export let runCommand: (command: Command) => Promise<void>;
+	export let allowTestRun = true;
+	export let canRun = true;
 
-    // Helper to format aliases list
-    $: aliasString = command.aliases && command.aliases.length > 0 
-        ? command.aliases.join(', ') 
-        : 'No aliases';
+	let popup = false;
+	let pending = false;
+	let errorMessage = '';
+	let runResult = '';
+
+	async function act(action: () => Promise<void>, running = false) {
+		if (pending) return;
+		pending = true;
+		errorMessage = '';
+		runResult = '';
+		try {
+			await action();
+			if (running) runResult = allowTestRun ? 'Command finished.' : 'Command sent.';
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : String(error);
+		} finally {
+			pending = false;
+		}
+	}
 </script>
 
-<div 
-    class="group relative w-full bg-dark-background-300 hover:bg-dark-background-400 border border-transparent hover:border-dark-secondary/30 rounded-xl transition-all duration-200 cursor-pointer overflow-hidden shadow-sm hover:shadow-lg mb-3"
-    on:click={() => popup = true}
-    role="button"
-    tabindex="0"
-    on:keypress={(e) => e.key === 'Enter' && (popup = true)}
->
-    <div class="flex flex-col md:flex-row h-full">
-        
-        <div class="flex-1 p-5 flex flex-col justify-center border-r border-white/5">
-            <h3 class="text-lg font-semibold text-dark-primary mb-1">{command.name}</h3>
-            <div class="text-sm text-gray-400 flex items-center gap-2">
-                <span class="text-xs uppercase tracking-wider font-bold text-dark-secondary">Aliases:</span>
-                <span class="truncate">{aliasString}</span>
-            </div>
-        </div>
+<article class="command-card">
+	<button
+		type="button"
+		class="command-summary"
+		aria-label={`Edit ${command.name}`}
+		disabled={pending}
+		on:click={() => {
+			popup = true;
+		}}
+	>
+		<span class="command-name">{command.name}</span>
+		<span class="command-aliases"
+			>{command.aliases?.length ? command.aliases.join(' · ') : 'No voice aliases'}</span
+		>
+		<code>{command.command}</code>
+	</button>
+	<div class="command-actions">
+		<button
+			type="button"
+			class="editor-button"
+			disabled={pending || !canRun}
+			title={!canRun ? 'Save device changes before running this command' : `Run ${command.name}`}
+			on:click={() => act(() => runCommand(command), true)}>{pending ? 'Working…' : 'Run'}</button
+		>
+		<button
+			type="button"
+			class="editor-icon-button"
+			aria-label={`Delete ${command.name}`}
+			disabled={pending}
+			on:click={() => act(() => deleteCommand(command))}
+		>
+			<svg
+				width="18"
+				height="18"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="1.6"
+				aria-hidden="true"
+				><path
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7m4-7v7"
+				/></svg
+			>
+		</button>
+	</div>
+	{#if errorMessage}<p role="alert" class="editor-error">{errorMessage}</p>{/if}
+	{#if runResult}<p role="status" class="run-result">{runResult}</p>{/if}
+</article>
 
-        <div class="w-full md:w-1/2 bg-black/20 p-4 font-mono text-sm text-gray-300 flex items-center relative group-hover:bg-black/30 transition-colors">
-            <div class="w-full overflow-hidden text-ellipsis whitespace-nowrap pr-16">
-                <span class="text-dark-accent">$</span> {command.command}
-            </div>
-
-            <div class="absolute right-3 flex items-center gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-200">
-                <button 
-                    on:click|stopPropagation={async () => await runCommand(command)}
-                    class="p-2 rounded-lg bg-green-500/10 text-green-500 hover:bg-green-500 hover:text-white transition-all"
-                    title="Run Command"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
-                    </svg>
-                </button>
-
-                <button 
-                    on:click|stopPropagation={async () => await deleteCommand(command)}
-                    class="p-2 rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white transition-all"
-                    title="Delete Command"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                    </svg>
-                </button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<CreateCommandPopup 
-    bind:visible={popup} 
-    type="Edit" 
-    newCommand={command} 
-	updateCommand={updateCommands} 
-    on:close={() => popup = false}
+<CommandPopup
+	bind:visible={popup}
+	type="Edit"
+	{device}
+	{runCommand}
+	{allowTestRun}
+	newCommand={command}
+	saveCommand={updateCommands}
 />
+
+<style>
+	.command-card {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 0.5rem 0.75rem;
+		min-width: 0;
+		border: 1px solid rgb(255 255 255 / 0.08);
+		border-radius: 0.875rem;
+		background: #111114;
+		padding: 0.875rem;
+	}
+	.command-summary {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+		min-width: 0;
+		text-align: left;
+		padding: 0.25rem;
+		border-radius: 0.375rem;
+	}
+	.command-summary:focus-visible {
+		outline: 2px solid #818cf8;
+		outline-offset: 3px;
+	}
+	.command-name {
+		color: #f4f4f5;
+		font-size: 0.875rem;
+		font-weight: 600;
+		overflow-wrap: anywhere;
+	}
+	.command-summary:hover .command-name {
+		color: #a5b4fc;
+	}
+	.command-aliases {
+		color: #a1a1aa;
+		font-size: 0.75rem;
+		overflow-wrap: anywhere;
+	}
+	code {
+		color: #818cf8;
+		font-size: 0.75rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		width: 100%;
+	}
+	.command-actions {
+		display: flex;
+		gap: 0.375rem;
+		align-items: center;
+	}
+	.command-card > :global(.editor-error) {
+		grid-column: 1 / -1;
+	}
+	.run-result {
+		grid-column: 1 / -1;
+		color: #6ee7b7;
+		font-size: 0.75rem;
+	}
+	@media (max-width: 440px) {
+		.command-card {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.command-actions {
+			justify-content: flex-end;
+		}
+	}
+</style>

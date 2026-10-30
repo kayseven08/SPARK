@@ -14,15 +14,15 @@
   let errorMsg = '';
 
   onMount(async () => {
-    await restoreAuthFromStore();
+    const authenticated = await restoreAuthFromStore();
 
     const u = await getStore('user');
     const device = (await getStore('device')) as Device;
-    if (device?.id && device?.assignedUser) {
+    if (authenticated && device?.id && device?.assignedUser) {
       await goto('/dashboard');
       return;
     }
-    if (isPublicUserReady(u)) {
+    if (authenticated && isPublicUserReady(u)) {
       canProceed = true;
       await goto('/group-info');
     }
@@ -44,6 +44,7 @@
     await setStore('refreshToken', refreshToken);
 
     canProceed = true;
+    await goto('/group-info');
     return true;
   }
 

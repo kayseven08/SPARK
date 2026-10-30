@@ -1,7 +1,107 @@
-import { deviceToSpecificDevice, type Device, type PublicUser } from '$lib';
-import { ensureAuthenticated, persistSession } from './auth';
-import { setStore, initRealtime } from './tauri';
-import { supabase } from './supabase';
+import type { PostgrestError } from '@supabase/supabase-js';
+import type { Command, Device, Message, PublicUser, UserSettings } from '$lib';
+import { ensureAuthenticated, getSessionUserId, persistSession } from './auth';
+import { getStore, setStore, initRealtime } from './tauri';
+import { supabase, type Group } from './supabase';
+
+// ---------------------------------------------------------------------------
+// Response helpers
+//
+// Every exported function keeps its old signature and still returns a
+// `Response`, so existing pages (`res.ok`, `await res.json()`, `res.status`,
+// `await res.text()`) work unchanged. The `_token` parameters are kept for
+// compatibility and ignored: supabase-js attaches the session JWT itself.
+// ---------------------------------------------------------------------------
+
+const json = (body: unknown, status = 200): Response =>
+	new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+
+const fail = (message: string, status = 500): Response => json({ error: message }, status);
+const notAuthenticated = (): Response => fail('Not authenticated', 401);
+
+/** Map a PostgREST/Postgres error to an HTTP-style Response. */
+function dbFail(error: PostgrestError, uniqueMessage = 'Already exists'): Response {
+	switch (error.code) {
+		case '23505':
+			return fail(uniqueMessage, 409); // unique_violation
+		case '23514':
+			return fail('Invalid value: check names and message length', 400);
+		case '23503':
+			return fail('Related record not found', 400); // foreign_key_violation
+		case '42501':
+			return fail('Not allowed', 403); // RLS / privilege
+		case 'PGRST116':
+			return fail('Not found', 404); // .single() matched no rows
+		default:
+			return fail(error.message, 500);
+	}
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// ---------------------------------------------------------------------------
+// Row <-> UI mapping
+// ---------------------------------------------------------------------------
+
+type CommandRow = { id: string; name: string; command: string; aliases: string[] };
+type DeviceRow = {
+	id: string;
+	name: string;
+	type: 'client' | 'server';
+	aliases: string[];
+	assigned_group_id: string;
+	assigned_user_id: string;
+	commands: CommandRow[] | null;
+};
+
+/** `commands(...)` is an embedded relation (devices <- commands). */
+const DEVICE_SELECT =
+	'id, name, type, aliases, assigned_group_id, assigned_user_id, commands(id, name, command, aliases)';
+const MESSAGE_SELECT = 'id, from_device_id, to_device_id, content, status, created_at';
+
+export function rowToDevice(row: DeviceRow): Device {
+	return {
+		id: row.id,
+		name: row.name,
+		type: row.type,
+		aliases: row.aliases ?? [],
+		assignedGroup: { id: row.assigned_group_id },
+		assignedUser: { id: row.assigned_user_id },
+		deviceCommands: (row.commands ?? []).map((c) => ({
+			id: c.id,
+			name: c.name,
+			command: c.command,
+			aliases: c.aliases ?? []
+		}))
+	};
+}
+
+type MessageRow = {
+	id: string;
+	from_device_id: string | null;
+	to_device_id: string;
+	content: string;
+	status: number;
+	created_at: string;
+};
+
+const rowToMessage = (m: MessageRow): Message => ({
+	id: m.id,
+	from: m.from_device_id,
+	to: m.to_device_id,
+	content: m.content,
+	status: m.status,
+	createdAt: m.created_at
+});
+
+/**
+ * What goes into the Tauri store as `device`. Same camelCase shape the Rust
+ * `Device` struct deserializes. Messages are intentionally excluded.
+ */
+export function toStoredDevice(device: Device): Device {
+	const { messages: _messages, ...rest } = device;
+	return rest;
+}
 
 // ---------------------------------------------------------------------------
 // Auth helpers
@@ -18,12 +118,13 @@ async function fetchUserProfile(userId: string) {
 	return data;
 }
 
+const DEFAULT_SETTINGS: UserSettings = { primaryCommunicationMethod: 'realtime' };
+
 function toPublicUser(
 	authUser: { id: string; email?: string; user_metadata?: Record<string, unknown> },
-	profile: { id: string; email?: string; username?: string; settings?: PublicUser['settings'] } | null,
+	profile: { id: string; email?: string; username?: string; settings?: unknown } | null,
 	fallback?: { email?: string; username?: string }
 ): PublicUser {
-	const defaultSettings = { primaryCommunicationMethod: 'realtime' as const };
 	return {
 		id: authUser.id,
 		email:
@@ -35,13 +136,19 @@ function toPublicUser(
 			profile?.username ??
 			(typeof authUser.user_metadata?.username === 'string'
 				? authUser.user_metadata.username
-				: fallback?.username ?? ''),
-		settings: profile?.settings ?? defaultSettings
+				: (fallback?.username ?? '')),
+		settings: {
+			...DEFAULT_SETTINGS,
+			...((profile?.settings ?? {}) as Partial<UserSettings>),
+			primaryCommunicationMethod: 'realtime'
+		}
 	};
 }
 
 async function authSuccessResponse(
-	session: NonNullable<Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>['data']['session']>,
+	session: NonNullable<
+		Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>['data']['session']
+	>,
 	fallback?: { email?: string; username?: string }
 ): Promise<Response> {
 	await persistSession(session);
@@ -49,17 +156,20 @@ async function authSuccessResponse(
 	const profile = await fetchUserProfile(session.user.id);
 	const user = toPublicUser(session.user, profile, fallback);
 
+	const localDevice = (await getStore('device')) as Device | null;
+	if (localDevice?.assignedUser?.id !== user.id) {
+		await setStore('device', null);
+		await setStore('group', null);
+		await setStore('deviceType', '');
+	}
 	await setStore('user', user);
 	await initRealtime();
 
-	return new Response(
-		JSON.stringify({
-			user,
-			accessToken: session.access_token,
-			refreshToken: session.refresh_token
-		}),
-		{ status: 200 }
-	);
+	return json({
+		user,
+		accessToken: session.access_token,
+		refreshToken: session.refresh_token
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -68,22 +178,14 @@ async function authSuccessResponse(
 
 export async function loginApi(email: string, password: string): Promise<Response> {
 	const normalizedEmail = email.trim().toLowerCase();
-	if (!normalizedEmail || !password) {
-		return new Response(JSON.stringify({ error: 'Email and password are required' }), {
-			status: 400
-		});
-	}
+	if (!normalizedEmail || !password) return fail('Email and password are required', 400);
 
 	const { data, error } = await supabase.auth.signInWithPassword({
 		email: normalizedEmail,
 		password
 	});
 
-	if (error || !data.session) {
-		return new Response(JSON.stringify({ error: error?.message ?? 'Invalid credentials' }), {
-			status: 401
-		});
-	}
+	if (error || !data.session) return fail(error?.message ?? 'Invalid credentials', 401);
 
 	return authSuccessResponse(data.session, { email: normalizedEmail });
 }
@@ -97,98 +199,74 @@ export async function registerApi(
 	const normalizedUsername = username.trim();
 
 	if (!normalizedEmail || !normalizedUsername || !password) {
-		return new Response(JSON.stringify({ error: 'Email, username, and password are required' }), {
-			status: 400
-		});
+		return fail('Email, username, and password are required', 400);
 	}
+	if (normalizedUsername.length < 2 || normalizedUsername.length > 32) {
+		return fail('Username must be 2–32 characters', 400);
+	}
+
+	// Pre-check so a taken username produces a clear error instead of the
+	// signup trigger silently suffixing it (public.is_username_available is
+	// callable before login).
+	const { data: available } = await supabase.rpc('is_username_available', {
+		p_username: normalizedUsername
+	});
+	if (available === false) return fail('That username is already taken', 409);
 
 	const { data, error } = await supabase.auth.signUp({
 		email: normalizedEmail,
 		password,
-		options: {
-			data: { username: normalizedUsername }
-		}
+		options: { data: { username: normalizedUsername } }
 	});
 
-	if (error || !data.user) {
-		return new Response(JSON.stringify({ error: error?.message ?? 'Registration failed' }), {
-			status: 400
-		});
-	}
+	if (error || !data.user) return fail(error?.message ?? 'Registration failed', 400);
 
 	let session = data.session;
 
-	// signUp may omit the session even when email confirmation is off; sign in immediately.
+	// signUp returns no session when "Confirm email" is still enabled in the dashboard.
 	if (!session) {
-		const signIn = await supabase.auth.signInWithPassword({
-			email: normalizedEmail,
-			password
-		});
-
+		const signIn = await supabase.auth.signInWithPassword({ email: normalizedEmail, password });
 		if (signIn.error || !signIn.data.session) {
-			return new Response(
-				JSON.stringify({
-					error:
-						signIn.error?.message ??
-						'Account was created but sign-in failed. Re-run client/supabase/schema.sql (auto-confirm trigger) and disable "Confirm email" under Authentication → Providers → Email.'
-				}),
-				{ status: 400 }
+			return fail(
+				signIn.error?.message ??
+					'Account created but sign-in failed. Disable "Confirm email" in Supabase → Authentication → Providers → Email.',
+				400
 			);
 		}
-
 		session = signIn.data.session;
 	}
 
-	// Profile row is created by private.handle_new_user trigger.
+	// The profile row is created by the private.handle_new_user trigger.
 	let profile = await fetchUserProfile(data.user.id);
 	if (!profile) {
 		await new Promise((r) => setTimeout(r, 500));
 		profile = await fetchUserProfile(data.user.id);
 	}
-
-	if (!profile) {
-		return new Response(
-			JSON.stringify({
-				error: 'Account created but profile was not found. Re-run client/supabase/schema.sql.'
-			}),
-			{ status: 500 }
-		);
-	}
+	if (!profile)
+		return fail('Account created but profile was not found. Check schema.sql triggers.');
 
 	return authSuccessResponse(session, { email: normalizedEmail, username: normalizedUsername });
 }
 
 export async function sessionRefreshApi(refreshToken: string): Promise<Response> {
 	const { data, error } = await supabase.auth.refreshSession({ refresh_token: refreshToken });
-	if (error || !data.session) {
-		return new Response(JSON.stringify({ error: error?.message ?? 'Invalid refresh token' }), {
-			status: 401
-		});
-	}
+	if (error || !data.session) return fail(error?.message ?? 'Invalid refresh token', 401);
 
 	await persistSession(data.session);
-
-	return new Response(
-		JSON.stringify({
-			accessToken: data.session.access_token,
-			refreshToken: data.session.refresh_token
-		}),
-		{ status: 200 }
-	);
+	return json({
+		accessToken: data.session.access_token,
+		refreshToken: data.session.refresh_token
+	});
 }
 
 export async function sessionUserApi(accessToken: string): Promise<Response> {
 	const { data, error } = await supabase.auth.getUser(accessToken);
-	if (error || !data.user) {
-		return new Response(JSON.stringify({ error: 'Invalid token' }), { status: 401 });
-	}
+	if (error || !data.user) return fail('Invalid token', 401);
 
 	const profile = await fetchUserProfile(data.user.id);
-	if (!profile) {
-		return new Response(JSON.stringify({ error: 'User profile not found' }), { status: 404 });
-	}
+	if (!profile) return fail('User profile not found', 404);
 
-	return new Response(JSON.stringify(toPublicUser(data.user, profile)), { status: 200 });
+	return json(toPublicUser(data.user, profile));
 }
 
 // ---------------------------------------------------------------------------
@@ -196,115 +274,172 @@ export async function sessionUserApi(accessToken: string): Promise<Response> {
 // ---------------------------------------------------------------------------
 
 export async function updateUserApi(user: PublicUser, _token: string): Promise<Response> {
-	if (!(await ensureAuthenticated())) {
-		return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401 });
-	}
+	if (!(await ensureAuthenticated())) return notAuthenticated();
 
+	// NOTE: `email` is intentionally not updated here — it mirrors auth.users and
+	// the column is not writable by clients. Change email via supabase.auth.updateUser().
 	const { error } = await supabase
 		.from('users')
-		.update({ username: user.username, email: user.email, settings: user.settings })
+		.update({ username: user.username, settings: user.settings })
 		.eq('id', user.id);
 
-	if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
-	return new Response(JSON.stringify(user), { status: 200 });
+	if (error) return dbFail(error, 'That username is already taken');
+	return json(user);
 }
 
 // ---------------------------------------------------------------------------
-// Groups
+// Groups  (reads use the `groups_with_devices` view -> group.devices.{client,server}: string[])
 // ---------------------------------------------------------------------------
 
+function viewRowToGroup(row: {
+	id: string | null;
+	name: string | null;
+	assigned_user_id: string | null;
+	settings: unknown;
+	devices: unknown;
+}): Group {
+	const devices = (row.devices ?? {}) as { client?: string[]; server?: string[] };
+	return {
+		id: row.id ?? '',
+		name: row.name ?? '',
+		assigned_user_id: row.assigned_user_id ?? '',
+		settings: (row.settings ?? {}) as Record<string, unknown>,
+		devices: { client: devices.client ?? [], server: devices.server ?? [] }
+	};
+}
+
 export async function fetchUserGroups(userId: string, _token: string): Promise<Response> {
-	if (!(await ensureAuthenticated())) {
-		return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401 });
-	}
+	if (!(await ensureAuthenticated())) return notAuthenticated();
 
 	const { data, error } = await supabase
-		.from('groups')
+		.from('groups_with_devices')
 		.select('*')
-		.eq('assigned_user_id', userId);
+		.eq('assigned_user_id', userId)
+		.order('created_at', { ascending: true });
 
-	if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
-	return new Response(JSON.stringify(data ?? []), { status: 200 });
+	if (error) return dbFail(error);
+	return json((data ?? []).map(viewRowToGroup));
 }
 
 export async function fetchGroupById(groupId: string, _token: string): Promise<Response> {
-	if (!(await ensureAuthenticated())) {
-		return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401 });
-	}
+	if (!(await ensureAuthenticated())) return notAuthenticated();
 
-	const { data, error } = await supabase.from('groups').select('*').eq('id', groupId).single();
-	if (error) return new Response(JSON.stringify({ error: error.message }), { status: 404 });
-	return new Response(JSON.stringify(data), { status: 200 });
+	const { data, error } = await supabase
+		.from('groups_with_devices')
+		.select('*')
+		.eq('id', groupId)
+		.single();
+
+	if (error) return dbFail(error);
+	return json(viewRowToGroup(data));
 }
 
 export async function createGroupApi(name: string, _token: string): Promise<Response> {
-	if (!(await ensureAuthenticated())) {
-		return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401 });
-	}
-
-	const {
-		data: { user }
-	} = await supabase.auth.getUser();
-
-	if (!user) {
-		return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401 });
-	}
+	const userId = await getSessionUserId();
+	if (!userId) return notAuthenticated();
 
 	const { data, error } = await supabase
 		.from('groups')
-		.insert({
-			name,
-			assigned_user_id: user.id,
-			devices: { client: [], server: [] },
-			messages: [],
-			command_presets: [],
-			ai_messages: [],
-			settings: {}
-		})
-		.select()
+		.insert({ name: name.trim() || 'New Group', assigned_user_id: userId })
+		.select('id, name, assigned_user_id, settings')
 		.single();
 
-	if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
-	return new Response(JSON.stringify(data), { status: 200 });
+	if (error) return dbFail(error);
+	// A new group has no devices yet.
+	return json(viewRowToGroup({ ...data, devices: { client: [], server: [] } }));
 }
 
 export async function deleteGroupApi(groupId: string, _token: string): Promise<Response> {
-	if (!(await ensureAuthenticated())) {
-		return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401 });
-	}
+	if (!(await ensureAuthenticated())) return notAuthenticated();
 
+	// ON DELETE CASCADE removes the group's devices, commands, presets, and AI history.
 	const { error } = await supabase.from('groups').delete().eq('id', groupId);
-	if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+	if (error) return dbFail(error);
 	return new Response(null, { status: 200 });
 }
 
+/**
+ * Save a command preset on a group and copy it onto every device in the group
+ * (replaces the old POST /group/addCommand).
+ */
+export async function addCommandPresetToGroupApi(
+	groupId: string,
+	command: Command,
+	_token = ''
+): Promise<Response> {
+	const userId = await getSessionUserId();
+	if (!userId) return notAuthenticated();
+
+	const { data, error } = await supabase
+		.from('command_presets')
+		.upsert(
+			{
+				assigned_group_id: groupId,
+				assigned_user_id: userId,
+				name: command.name,
+				command: command.command,
+				aliases: command.aliases
+			},
+			{ onConflict: 'assigned_group_id,name' }
+		)
+		.select('id')
+		.single();
+	if (error) return dbFail(error);
+
+	const { data: applied, error: rpcError } = await supabase.rpc('apply_command_preset', {
+		p_preset_id: data.id
+	});
+	if (rpcError) return dbFail(rpcError);
+	return json({ presetId: data.id, devicesUpdated: applied });
+}
+
 // ---------------------------------------------------------------------------
-// Devices
+// Devices  (client + server live in one `devices` table; `type` distinguishes)
 // ---------------------------------------------------------------------------
 
-export async function getDeviceApi(id: string, type: string, _token: string) {
+/**
+ * The `_type` argument is kept for compatibility; ids are globally unique so it
+ * is not needed for lookup. Pass `withMessages = true` to also load the most
+ * recent messages sent to or from the device.
+ */
+export async function getDeviceApi(
+	id: string,
+	_type: string,
+	_token: string,
+	withMessages = false
+): Promise<Device | null> {
 	if (!(await ensureAuthenticated())) return null;
 
-	const table = type === 'client' ? 'client_devices' : 'server_devices';
-	const { data, error } = await supabase.from(table).select('*').eq('id', id).single();
-	if (error) return null;
-	return data;
+	const { data, error } = await supabase
+		.from('devices')
+		.select(DEVICE_SELECT)
+		.eq('id', id)
+		.single();
+	if (error || !data) return null;
+
+	const device = rowToDevice(data as unknown as DeviceRow);
+	if (withMessages) device.messages = await fetchDeviceMessages(id);
+	return device;
 }
 
 export async function listAllDevices(_token: string): Promise<Response> {
-	if (!(await ensureAuthenticated())) {
-		return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401 });
-	}
+	if (!(await ensureAuthenticated())) return notAuthenticated();
 
-	const [{ data: clientDevices }, { data: serverDevices }] = await Promise.all([
-		supabase.from('client_devices').select('*'),
-		supabase.from('server_devices').select('*')
-	]);
+	// RLS already scopes this to the signed-in user's devices.
+	const { data, error } = await supabase
+		.from('devices')
+		.select(DEVICE_SELECT)
+		.order('created_at', { ascending: true });
+	if (error) return dbFail(error);
 
-	return new Response(
-		JSON.stringify({ clientDevices: clientDevices ?? [], serverDevices: serverDevices ?? [] }),
-		{ status: 200 }
-	);
+	const devices = (data as unknown as DeviceRow[]).map((row) => ({
+		type: row.type,
+		device: rowToDevice(row)
+	}));
+	return json({
+		clientDevices: devices.filter((d) => d.type === 'client').map((d) => d.device),
+		serverDevices: devices.filter((d) => d.type === 'server').map((d) => d.device)
+	});
 }
 
 export async function createDeviceApi(
@@ -312,35 +447,73 @@ export async function createDeviceApi(
 	body: { name: string; assignedGroupId: string },
 	_token: string
 ): Promise<Response> {
-	if (!(await ensureAuthenticated())) {
-		return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401 });
-	}
+	const userId = await getSessionUserId();
+	if (!userId) return notAuthenticated();
 
-	const table = deviceType === 'client' ? 'client_devices' : 'server_devices';
-	const {
-		data: { user }
-	} = await supabase.auth.getUser();
-
-	if (!user) {
-		return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401 });
-	}
-
+	const name = body.name.trim();
 	const { data, error } = await supabase
-		.from(table)
+		.from('devices')
 		.insert({
-			name: body.name,
+			name,
+			type: deviceType,
 			assigned_group_id: body.assignedGroupId,
-			assigned_user_id: user.id,
-			messages: [],
-			device_commands: [],
-			settings: {},
-			aliases: []
+			assigned_user_id: userId,
+			aliases: [name]
 		})
-		.select()
+		.select(DEVICE_SELECT)
 		.single();
 
-	if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
-	return new Response(JSON.stringify(data), { status: 200 });
+	if (error) return dbFail(error, 'A device with that name already exists in this group');
+	return json(rowToDevice(data as unknown as DeviceRow));
+}
+
+/**
+ * Persist `device.deviceCommands` for one device. Idempotent: upserts by
+ * (device_id, name), then deletes rows whose name is no longer present.
+ */
+async function syncDeviceCommands(
+	deviceId: string,
+	userId: string,
+	commands: Command[]
+): Promise<PostgrestError | null> {
+	// Last occurrence wins if the UI list contains duplicate names.
+	const byName = new Map<string, Command>();
+	for (const c of commands) {
+		const name = c.name?.trim();
+		const command = c.command?.trim();
+		if (name && command) byName.set(name, { ...c, name, command });
+	}
+
+	if (byName.size > 0) {
+		const { error } = await supabase.from('commands').upsert(
+			[...byName.values()].map((c) => ({
+				device_id: deviceId,
+				assigned_user_id: userId,
+				name: c.name,
+				command: c.command,
+				aliases: (c.aliases ?? []).filter((a) => a.trim() !== '')
+			})),
+			{ onConflict: 'device_id,name' }
+		);
+		if (error) return error;
+	}
+
+	const { data: existing, error: listError } = await supabase
+		.from('commands')
+		.select('name')
+		.eq('device_id', deviceId);
+	if (listError) return listError;
+
+	const stale = (existing ?? []).map((r) => r.name).filter((n) => !byName.has(n));
+	if (stale.length > 0) {
+		const { error } = await supabase
+			.from('commands')
+			.delete()
+			.eq('device_id', deviceId)
+			.in('name', stale);
+		if (error) return error;
+	}
+	return null;
 }
 
 export async function updateDeviceApi(
@@ -348,71 +521,124 @@ export async function updateDeviceApi(
 	_token: string,
 	thisDeviceId?: string
 ): Promise<Response> {
-	if (!(await ensureAuthenticated())) {
-		return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401 });
+	const userId = await getSessionUserId();
+	if (!userId) return notAuthenticated();
+	if (!device.id) return fail('Device id is required', 400);
+
+	const type = device.type === 'server' ? 'server' : 'client';
+
+	const { error } = await supabase
+		.from('devices')
+		.update({
+			name: device.name?.trim() || undefined,
+			type,
+			aliases: device.aliases ?? []
+		})
+		.eq('id', device.id);
+	if (error) return dbFail(error, 'A device with that name already exists in this group');
+
+	if (device.deviceCommands) {
+		const cmdError = await syncDeviceCommands(device.id, userId, device.deviceCommands);
+		if (cmdError) return dbFail(cmdError, 'Two commands on this device share a name');
 	}
 
-	const specificDevice = deviceToSpecificDevice(device);
-	const type = device.type === 'client' ? 'client' : 'server';
-	const table = type === 'client' ? 'client_devices' : 'server_devices';
-
-	const { error } = await supabase.from(table).update(specificDevice).eq('id', device.id!);
-	if (!error && device.id === thisDeviceId) {
-		await setStore('device', specificDevice);
+	// Keep the local store in sync when editing THIS machine's device. The store
+	// uses the same camelCase shape the Rust listener deserializes.
+	if (device.id === thisDeviceId) {
+		await setStore('device', toStoredDevice({ ...device, type }));
 		await setStore('deviceType', type);
 	}
-	return error
-		? new Response(JSON.stringify({ error: error.message }), { status: 500 })
-		: new Response(null, { status: 200 });
+	return new Response(null, { status: 200 });
 }
 
 export async function deleteDeviceApi(
 	deviceId: string,
-	deviceType: 'client' | 'server',
+	_deviceType: 'client' | 'server',
 	_token: string
 ): Promise<Response> {
-	if (!(await ensureAuthenticated())) {
-		return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401 });
-	}
+	if (!(await ensureAuthenticated())) return notAuthenticated();
 
-	const table = deviceType === 'client' ? 'client_devices' : 'server_devices';
-	const { error } = await supabase.from(table).delete().eq('id', deviceId);
-	if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+	// Commands are deleted by cascade; messages TO the device cascade, messages
+	// FROM it are kept with from_device_id = null.
+	const { error } = await supabase.from('devices').delete().eq('id', deviceId);
+	if (error) return dbFail(error);
 	return new Response(null, { status: 200 });
 }
 
+/**
+ * Kept for compatibility with device-setup. A device now belongs to a group via
+ * `devices.assigned_group_id` (set at creation), so "adding" is a (re)assignment
+ * and a no-op when it is already in that group.
+ */
 export async function addDeviceToGroupApi(
 	body: { groupId: string; deviceId: string; deviceType: string },
 	_token: string
 ): Promise<Response> {
-	if (!(await ensureAuthenticated())) {
-		return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401 });
-	}
+	if (!(await ensureAuthenticated())) return notAuthenticated();
 
-	const { data: group, error: fetchError } = await supabase
-		.from('groups')
-		.select('devices')
-		.eq('id', body.groupId)
-		.single();
-
-	if (fetchError) {
-		return new Response(JSON.stringify({ error: fetchError.message }), { status: 500 });
-	}
-
-	const devices = group.devices ?? { client: [], server: [] };
-	const key = body.deviceType === 'client' ? 'client' : 'server';
-	if (!devices[key].includes(body.deviceId)) {
-		devices[key] = [...devices[key], body.deviceId];
-	}
-
-	const { error } = await supabase.from('groups').update({ devices }).eq('id', body.groupId);
-	if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+	const { error } = await supabase
+		.from('devices')
+		.update({ assigned_group_id: body.groupId })
+		.eq('id', body.deviceId);
+	if (error) return dbFail(error, 'A device with that name already exists in this group');
 	return new Response(null, { status: 200 });
 }
 
 // ---------------------------------------------------------------------------
-// Messages
+// Messages  (one row per message; a device's messages = rows sent to/from it)
 // ---------------------------------------------------------------------------
+
+async function fetchDeviceMessages(
+	deviceId: string,
+	limit = 50,
+	strict = false
+): Promise<Message[]> {
+	if (!UUID_RE.test(deviceId)) return [];
+
+	const { data, error } = await supabase
+		.from('messages')
+		.select(MESSAGE_SELECT)
+		.or(`to_device_id.eq.${deviceId},from_device_id.eq.${deviceId}`)
+		.order('created_at', { ascending: false })
+		.limit(limit);
+	if (error) {
+		if (strict) throw new Error(error.message);
+		return [];
+	}
+	if (!data) return [];
+
+	// Newest last, like the old embedded arrays.
+	return (data as MessageRow[]).reverse().map(rowToMessage);
+}
+
+export async function getDeviceMessagesApi(deviceId: string, limit = 50): Promise<Message[]> {
+	if (!(await ensureAuthenticated())) return [];
+	return fetchDeviceMessages(deviceId, limit, true);
+}
+
+export async function sendMessageApi(body: {
+	fromDeviceId: string | null;
+	toDeviceId: string;
+	content: string;
+}): Promise<Response> {
+	const userId = await getSessionUserId();
+	if (!userId) return notAuthenticated();
+
+	const { data, error } = await supabase
+		.from('messages')
+		.insert({
+			assigned_user_id: userId,
+			from_device_id: body.fromDeviceId,
+			to_device_id: body.toDeviceId,
+			content: body.content
+		})
+		.select(MESSAGE_SELECT)
+		.single();
+
+	// RLS rejects (42501) a message whose devices aren't the caller's.
+	if (error) return dbFail(error);
+	return json(rowToMessage(data as MessageRow));
+}
 
 export async function deleteMessageApi(id: string, _token: string): Promise<boolean> {
 	if (!(await ensureAuthenticated())) return false;
@@ -429,13 +655,8 @@ export async function refreshDeviceSessionApi(_body: {
 	user: PublicUser;
 	device: unknown;
 }): Promise<Response> {
-	if (!(await ensureAuthenticated())) {
-		return new Response(JSON.stringify({ error: 'Not authenticated' }), { status: 401 });
-	}
+	if (!(await ensureAuthenticated())) return notAuthenticated();
 
 	const { data } = await supabase.auth.getSession();
-	return new Response(
-		JSON.stringify({ refreshToken: data.session?.refresh_token ?? '' }),
-		{ status: 200 }
-	);
+	return json({ refreshToken: data.session?.refresh_token ?? '' });
 }

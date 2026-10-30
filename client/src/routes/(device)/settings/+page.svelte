@@ -13,9 +13,12 @@
 		email: '',
 		username: 'default',
 		id: '1',
-		settings: { primaryCommunicationMethod: 'nats' }
+		settings: { primaryCommunicationMethod: 'realtime' }
 	};
 	let device: Device = { id: '1', name: 'default' };
+	let saving = false;
+	let notice = '';
+	let errorMessage = '';
 	let accessToken: string = '';
 
 	onMount(async () => {
@@ -24,52 +27,47 @@
 			await goto('/login');
 			return;
 		}
-		user = u;
+		user = { ...u, settings: { ...u.settings } };
 		device = (await getStore('device')) as Device;
 		const token = await getRequiredAccessToken('/login');
 		if (token) accessToken = token;
 	});
 
-	const saveUser = async () => {
-		const res = await updateUserApi(user, accessToken);
-		return res.ok;
-	};
-
 	const saveSettings = async () => {
-		await setStore('user', user);
-		await saveUser();
+		if (saving) return;
+		saving = true;
+		notice = '';
+		errorMessage = '';
+		try {
+			const response = await updateUserApi(user, accessToken);
+			if (!response.ok) {
+				const body = await response.json().catch(() => ({}));
+				throw new Error(body.error ?? 'Could not save your settings.');
+			}
+			await setStore('user', user);
+			notice = 'Settings saved.';
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : String(error);
+		} finally {
+			saving = false;
+		}
 	};
 </script>
 
-<div
-	class="bg-dark-background-600 w-[80vw] ml-[5%] rounded-[2rem] shadow-2xl min-h-screen overflow-auto relative px-[1%] pt-[0.5%] flex flex-col"
->
-	<div class="w-full flex-1">
-		<h1 class="text-2xl text-dark-primary mt-[0.5%] w-full text-center">Settings</h1>
+<div class="min-h-screen p-4 md:p-8">
+	<div class="max-w-4xl mx-auto space-y-6">
+		<header>
+			<h1 class="text-3xl font-bold text-white">Settings</h1>
+			<p class="text-sm text-zinc-400 mt-2">Manage your profile and device preferences.</p>
+		</header>
 		<UserSettings bind:user />
-
 		<ApplicationSettings />
-	</div>
-	<div class="flex justify-center py-8">
-		<button
-			class="flex text-dark-text rounded-xl bg-dark-primary px-6 py-2 justify-center items-center gap-2 scale-[1.2] hover:bg-dark-accent hover:scale-[1.25] hover:text-dark-success transition-all duration-200"
-			on:click={saveSettings}
-		>
-			<svg
-				xmlns="http://www.w3.org/2000/svg"
-				fill="none"
-				viewBox="0 0 24 24"
-				stroke-width="1.5"
-				stroke="currentColor"
-				class="size-6"
+		{#if errorMessage}<p class="editor-error" role="alert">{errorMessage}</p>{/if}
+		{#if notice}<p class="text-sm text-emerald-300" role="status">{notice}</p>{/if}
+		<div class="flex justify-end">
+			<button type="button" class="editor-primary" disabled={saving} on:click={saveSettings}
+				>{saving ? 'Saving…' : 'Save settings'}</button
 			>
-				<path
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z"
-				/>
-			</svg>
-			Save
-		</button>
+		</div>
 	</div>
 </div>

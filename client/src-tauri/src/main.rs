@@ -1,27 +1,18 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::thread;
-use tauri::{self, Manager};
+use tauri;
 
 mod app;
 mod backend;
 mod store;
 mod tray;
-mod xata_structs;
 
 /// Called from the frontend after a successful login so the Rust backend
 /// can start (or restart) the Realtime subscription with fresh credentials.
 #[tauri::command]
-fn init_realtime() {
-    thread::Builder::new()
-        .name("supabase-realtime".to_string())
-        .spawn(|| {
-            if let Err(e) = backend::handle_device_updates_api_call() {
-                println!("[backend] Realtime init error: {e}");
-            }
-        })
-        .ok();
+fn init_realtime() -> Result<(), String> {
+    backend::handle_device_updates_api_call().map_err(|error| error.to_string())
 }
 
 fn main() {
