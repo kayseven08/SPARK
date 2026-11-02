@@ -1,4 +1,0 @@
-# syntax=docker/dockerfile:experimental
-
-# Build the NATS server
-FROM golang:1.16 as builder
