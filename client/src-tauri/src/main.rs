@@ -18,6 +18,12 @@ fn init_realtime(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn main() {
+    // Avoid the WebKitGTK DMABUF path on ARM Linux (Pi display corruption).
+    // Set WEBKIT_DISABLE_DMABUF_RENDERER=0 explicitly to try the default renderer.
+    #[cfg(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "arm")))]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
     tauri::Builder::default()
         .setup(|app| {
             tray::init_tray(app.handle())?;

@@ -56,6 +56,14 @@ class SPARK:
                 await self.print_to_console("Speech was not understood")
             except sr.WaitTimeoutError:
                 await self.print_to_console("Conversation timed out")
+            except OSError as error:
+                if "FLAC" in str(error).upper():
+                    await self.print_to_console(
+                        "Speech recognition needs FLAC. On the Pi run: sudo apt install flac"
+                    )
+                else:
+                    await self.print_to_console(f"Audio unavailable: {error}")
+                await asyncio.sleep(10)
 
     async def handle_ai(self, text, group, client, client_devices, server_devices):
         client_devices_updated = [

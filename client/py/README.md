@@ -9,7 +9,7 @@ On Raspberry Pi OS (64-bit), install the voice runtime:
 
 ```sh
 sudo apt update
-sudo apt install python3-venv python3-dev portaudio19-dev espeak-ng libespeak1
+sudo apt install python3-venv python3-dev portaudio19-dev espeak-ng libespeak1 flac
 python3 -m venv ~/.venvs/spark
 ~/.venvs/spark/bin/python -m pip install -r py/requirements.txt
 export SPARK_PYTHON="$HOME/.venvs/spark/bin/python"
@@ -50,3 +50,22 @@ Run routing regressions without audio hardware:
 ```sh
 python3 -m unittest discover -s py -p 'test_*.py'
 ```
+
+If speech recognition reports “FLAC conversion utility not available”, install
+`flac` with `sudo apt install flac`. It is a system executable, so installing
+Python packages in the virtual environment does not supply it on ARM Linux.
+ALSA/JACK device-probing warnings can appear even when recording works; use the
+final Python exception to identify the actual failure.
+
+For a corrupted/striped or blank Pi window, fully quit SPARK and try:
+
+```sh
+export SPARK_PYTHON="$HOME/.venvs/spark/bin/python"
+export WEBKIT_DISABLE_DMABUF_RENDERER=1
+npm run tauri dev
+```
+
+New builds default to that WebKitGTK workaround on ARM Linux. You can override
+it by setting `WEBKIT_DISABLE_DMABUF_RENDERER=0`. If corruption persists, try
+`LIBGL_ALWAYS_SOFTWARE=1` in the launcher environment as a diagnostic; this can
+reduce rendering performance. Rebuild with `npm run tauri build` for an installed app.

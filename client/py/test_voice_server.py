@@ -1,10 +1,11 @@
 """Exercise voice routing without requiring microphone drivers on the test host."""
+import asyncio
 import importlib.util
 from pathlib import Path
 import sys
 import types
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from command_formatter import CommandFormatter
 
@@ -13,6 +14,8 @@ def load_server():
     modules = {name: types.ModuleType(name) for name in
                ("httpx", "speech_recognition", "pyttsx3", "openai")}
     modules["speech_recognition"].Recognizer = Mock
+    for name in ("RequestError", "UnknownValueError", "WaitTimeoutError"):
+        setattr(modules["speech_recognition"], name, type(name, (Exception,), {}))
     modules["openai"].AsyncOpenAI = Mock
     modules["openai"].OpenAIError = Exception
     spec = importlib.util.spec_from_file_location("voice_server_test_target", Path(__file__).with_name("main.py"))
@@ -23,6 +26,19 @@ def load_server():
 
 
 class VoiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_flac_reports_install_instruction_and_backs_off(self):
+        module = load_server()
+        spark = module.SPARK()
+        spark.print_to_console = AsyncMock()
+        module.recognizer.recognize_google.side_effect = OSError("FLAC conversion utility not available")
+        with patch.object(module, "_mic_factory", return_value=MagicMock()), patch.object(
+            module.asyncio, "sleep", new=AsyncMock(side_effect=asyncio.CancelledError)
+        ) as sleep:
+            with self.assertRaises(asyncio.CancelledError):
+                await spark.listen()
+            sleep.assert_awaited_once_with(10)
+        self.assertIn("sudo apt install flac", spark.print_to_console.call_args.args[0])
+
     async def test_spoken_command_posts_to_supabase_inbox(self):
         spark = load_server().SPARK()
         spark.speak = Mock()
