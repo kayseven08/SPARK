@@ -36,6 +36,12 @@
       "deb": {
         "depends": []
       }
+    },
+    "resources": {
+      "../py/main.py": "py/main.py",
+      "../py/command_formatter.py": "py/command_formatter.py",
+      "../py/supabase_api.py": "py/supabase_api.py",
+      "../py/requirements.txt": "py/requirements.txt"
     }
   },
   "productName": "SPARK",

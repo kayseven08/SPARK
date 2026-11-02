@@ -10,25 +10,25 @@ class CommandFormatter:
         self.device_aliases = {}
 
     def parse_device_list(self, input_text, device_data=None):
+        self.command_aliases = {}
+        self.device_aliases = {}
         if not device_data: 
             device_matches = re.findall(r'\[{.*?}\](?=\s*(?:\|\||$))', input_text)
-            print(device_matches)
             devices = []
         
             for match in device_matches:
                 try:
                     json_str = match.replace("'", '"')
-                    print(json_str)
                     device_data = json.loads(json_str)
                     for device in device_data:
                         processed_commands = []
-                        aliases = device.get('aliases', [])
+                        aliases = device.get('aliases') or []
                         for alias in aliases:
                             self.device_aliases[alias.lower()] = device['name']
                         self.device_aliases[device['name'].lower()] = device['name']
                         for command in device['commands']:
                             commandName = command['name']
-                            aliases = command.get('aliases', [])
+                            aliases = command.get('aliases') or []
                             processed_commands.append(commandName)
                             
                             for alias in aliases:
@@ -37,7 +37,8 @@ class CommandFormatter:
                         
                         devices.append({
                             'name': device['name'],
-                            'commands': processed_commands
+                            'commands': processed_commands,
+                            'command_data': device['commands']
                         })
                 except json.JSONDecodeError as e:
                     print(f"JSON Error: {str(e)}")
@@ -49,13 +50,13 @@ class CommandFormatter:
             if device_data['clients']:
                 for client in device_data['clients']:
                     processed_commands = []
-                    aliases = client.get('aliases', [])
+                    aliases = client.get('aliases') or []
                     for alias in aliases:
                         self.device_aliases[alias.lower()] = client['name']
                     self.device_aliases[client['name'].lower()] = client['name']
                     for command in client['commands']:
                         commandName = command['name']
-                        aliases = command.get('aliases', [])
+                        aliases = command.get('aliases') or []
                         processed_commands.append(commandName)
                         
                         for alias in aliases:
@@ -64,18 +65,19 @@ class CommandFormatter:
                     
                     devices.append({
                         'name': client['name'],
+                        'command_data': client['commands'],
                         'commands': processed_commands
                     })
             if device_data['servers']:
                 for server in device_data['servers']:
                     processed_commands = []
-                    aliases = server.get('aliases', [])
+                    aliases = server.get('aliases') or []
                     for alias in aliases:
                         self.device_aliases[alias.lower()] = server['name']
                     self.device_aliases[server['name'].lower()] = server['name']
                     for command in server['commands']:
                         commandName = command['name']
-                        aliases = command.get('aliases', [])
+                        aliases = command.get('aliases') or []
                         processed_commands.append(commandName)
                         
                         for alias in aliases:
@@ -84,6 +86,7 @@ class CommandFormatter:
                     
                     devices.append({
                         'name': server['name'],
+                        'command_data': server['commands'],
                         'commands': processed_commands
                     })
             return devices
@@ -94,14 +97,17 @@ class CommandFormatter:
             r"(launch|open|start|run|execute)\s+(.+?)\s+on\s+(.+)",
             r"on\s+(.+?)\s+(launch|open|start|run|execute)\s+(.+)",
             r"(lock|secure|shutdown|suspend|restart|stop|pause|sleep|check)\s+(.+)",
+            r"(.+?)\s+on\s+(.+)",
         ]
 
         for pattern in command_patterns:
             match = re.search(pattern, nl_text, re.IGNORECASE)
             if match:
-                print(match.groups())
                 if len(match.groups()) == 3:
-                    verb, target, device = match.groups()
+                    if pattern.startswith(r"on"):
+                        device, verb, target = match.groups()
+                    else:
+                        verb, target, device = match.groups()
                     return device.strip(), f"{verb} {target}".strip()
                 if len(match.groups()) == 2:
                     verb, device = match.groups()
@@ -120,23 +126,16 @@ class CommandFormatter:
         if not matches:
             for name in device_names:
                 if f" {name.lower()} " in f" {device_name.lower()} ":
-                    print(f"Found close match: {name}")
                     return name
         return self.device_aliases[matches[0]] if matches else None
 
     def find_matching_command(self, command, device):
-        matches = get_close_matches(
-            command.lower(),
-            [cmd.lower() for cmd in self.command_aliases.keys()],
-            n=1,
-            cutoff=0.6
-        )
-        if not matches:
-            return None
-        if self.command_aliases[matches[0]] in device['commands']:
-            return self.command_aliases[matches[0]]
-        else:
-            return None
+        aliases = {}
+        for item in device.get('command_data', []):
+            for alias in [item['name'], *(item.get('aliases') or [])]:
+                aliases[alias.lower()] = item['name']
+        matches = get_close_matches(command.lower(), aliases, n=1, cutoff=0.6)
+        return aliases[matches[0]] if matches else None
 
     def parse_command(self, input_text, device_data=None):
         try:
@@ -161,7 +160,6 @@ class CommandFormatter:
             device = next(
                 (d for d in devices if d["name"] == matching_device_name), None
             )
-            print(device)
             matching_command = self.find_matching_command(command, device)
             if not matching_command:
                 return {

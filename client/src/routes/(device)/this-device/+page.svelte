@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { fade, fly } from 'svelte/transition';
 	import { goto } from '$app/navigation';
 	import { invoke } from '@tauri-apps/api/core';
@@ -15,6 +15,9 @@
 	let user = {} as User;
 	let group = {} as Group;
 	let accessToken = '';
+	let serverStatus = 'Starting voice server…';
+	let statusTimer: ReturnType<typeof setInterval>;
+	onDestroy(() => clearInterval(statusTimer));
 
 	onMount(async () => {
 		try {
@@ -26,6 +29,9 @@
 				getStore('accessToken')
 			]);
 
+			statusTimer = setInterval(async () => {
+				serverStatus = String((await getStore('serverStatus')) || 'Voice server inactive');
+			}, 1000);
 			thisDevice = storedDevice as Device;
 			if (thisDevice) thisDevice.type = (storedType as string) || 'client';
 			user = storedUser as User;
@@ -80,6 +86,13 @@
 					</div>
 				</div>
 			</header>
+
+			{#if thisDevice.type === 'server'}
+				<div class="spark-card p-6" role="status">
+					<p class="text-sm font-bold text-white">Voice server</p>
+					<p class="text-sm text-zinc-400 mt-2">{serverStatus}</p>
+				</div>
+			{/if}
 
 			<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
 				<div class="spark-card p-6 flex flex-col items-center justify-center text-center">

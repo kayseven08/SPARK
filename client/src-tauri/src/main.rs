@@ -5,13 +5,15 @@ use tauri;
 
 mod app;
 mod backend;
+mod server;
 mod store;
 mod tray;
 
 /// Called from the frontend after a successful login so the Rust backend
 /// can start (or restart) the Realtime subscription with fresh credentials.
 #[tauri::command]
-fn init_realtime() -> Result<(), String> {
+fn init_realtime(app: tauri::AppHandle) -> Result<(), String> {
+    server::start(app)?;
     backend::handle_device_updates_api_call().map_err(|error| error.to_string())
 }
 
@@ -39,5 +41,9 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|_app_handle, _event| {});
+        .run(|_app_handle, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                server::stop();
+            }
+        });
 }
