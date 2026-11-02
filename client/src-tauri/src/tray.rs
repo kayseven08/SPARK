@@ -1,60 +1,52 @@
 use tauri::{
-    AppHandle, CustomMenuItem, Manager as _, SystemTray, SystemTrayEvent, SystemTrayMenu,
-    SystemTrayMenuItem,
+    AppHandle, Manager,
+    menu::{Menu, MenuItemBuilder},
+    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
 };
 
-pub fn init_tray() -> SystemTray {
-    let quit = CustomMenuItem::new("quit", "Quit");
-    let hide = CustomMenuItem::new("hide", "Hide");
-    let show = CustomMenuItem::new("show", "Show");
+pub fn init_tray(app: &AppHandle) -> tauri::Result<()> {
+    let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+    let hide = MenuItemBuilder::with_id("hide", "Hide").build(app)?;
+    let show = MenuItemBuilder::with_id("show", "Show").build(app)?;
 
-    let tray_menu = SystemTrayMenu::new()
-        .add_item(quit)
-        .add_native_item(SystemTrayMenuItem::Separator)
-        .add_item(show)
-        .add_native_item(SystemTrayMenuItem::Separator)
-        .add_item(hide);
+    let menu = Menu::with_items(app, &[&quit, &hide, &show])?;
 
-    SystemTray::new().with_menu(tray_menu)
-}
-
-pub fn system_tray_event_handler(app: &AppHandle, event: SystemTrayEvent) {
-    match event {
-        SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
-            "quit" => {
-                app.exit(0);
-            }
-            "hide" => {
-                if let Some(w) = app.get_window("main") {
-                    let _ = w.hide();
-                }
-            }
-            "show" => {
-                if let Some(w) = app.get_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
-            }
-            _ => {}
-        },
-        SystemTrayEvent::LeftClick { .. } => {
-            if let Some(window) = app.get_window("main") {
-                // On macOS left-click on the menu-bar icon should toggle visibility.
-                // On other platforms we just show/focus.
-                #[cfg(target_os = "macos")]
-                {
-                    match window.is_visible() {
-                        Ok(true) => {
-                            let _ = window.hide();
-                            return;
-                        }
-                        _ => {}
+    TrayIconBuilder::new()
+        .icon(app.default_window_icon().cloned().expect("default window icon not set"))
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| {
+            match event.id() {
+                id if id == "quit" => app.exit(0),
+                id if id == "hide" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.hide();
                     }
                 }
-                let _ = window.show();
-                let _ = window.set_focus();
+                id if id == "show" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+                _ => {}
             }
-        }
-        _ => {}
-    }
+        })
+        .on_tray_icon_event(|tray, event| {
+            if matches!(event, TrayIconEvent::Click { button: MouseButton::Left, .. }) {
+                if let Some(window) = tray.app_handle().get_webview_window("main") {
+                    #[cfg(target_os = "macos")]
+                    if window.is_visible().unwrap_or(false) {
+                        let _ = window.hide();
+                        return;
+                    }
+
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        })
+        .build(app)?;
+
+    Ok(())
 }

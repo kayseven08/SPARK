@@ -1,5 +1,5 @@
 import type { Command } from '$lib';
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY } from '$env/static/public';
 
 const STORE_PATH = 'stores/store.json';

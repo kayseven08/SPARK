@@ -17,6 +17,12 @@ fn init_realtime() -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
+        .setup(|app| {
+            tray::init_tray(app.handle())?;
+            Ok(())
+        })
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             app::start_app,
@@ -25,11 +31,9 @@ fn main() {
             store::set_store,
             init_realtime,
         ])
-        .system_tray(tray::init_tray())
-        .on_system_tray_event(tray::system_tray_event_handler)
-        .on_window_event(|event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event.event() {
-                event.window().hide().unwrap();
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
                 api.prevent_close();
             }
         })

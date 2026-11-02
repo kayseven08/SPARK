@@ -129,7 +129,7 @@ fn drain_inbox(
                 Some(command) => match app::execute_command(command) {
                     Ok(true) => 1,
                     _ => 2,
-                }
+                },
                 None => 2,
             };
             // Retain the result if acknowledgement fails; reconnect must not rerun it.

@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { fade, fly } from 'svelte/transition';
 	import { goto } from '$app/navigation';
-	import { invoke } from '@tauri-apps/api/tauri';
+	import { invoke } from '@tauri-apps/api/core';
 	import { getStore, setStore } from '$lib/tauri';
 	import { getDeviceApi } from '$lib/api';
 	import DevicePopup from '$lib/DevicePopup.svelte';
